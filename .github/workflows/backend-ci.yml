@@ -1,0 +1,23 @@
+name: Backend CI
+on:
+  push:
+    paths: ["backend/**", "agent-core/**"]
+  pull_request:
+    paths: ["backend/**", "agent-core/**"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Backend install and typecheck
+        working-directory: backend
+        run: npm install && npm run typecheck
+      - name: Agent install and typecheck
+        working-directory: agent-core
+        run: npm install && npm run typecheck
