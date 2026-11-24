@@ -1,7 +1,7 @@
 name: Android CI
 on:
   push:
-    paths: ["android/**"]
+    paths: ["android/**", ".github/workflows/android-ci.yml"]
   pull_request:
     paths: ["android/**"]
   workflow_dispatch:
