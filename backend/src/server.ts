@@ -162,7 +162,7 @@ app.post("/api/v1/auth/logout", async (request, reply) => {
   return reply.code(204).send();
 });
 
-// Development MVP only. Do not expose this unauthenticated API to the public internet.
+// Private project API; the global preHandler requires a valid bearer session.
 app.get("/api/v1/projects", async (request) => {
   const { rows } = await pool.query(
     "SELECT id, name, description, model, github_repository, created_at FROM projects WHERE owner_id = $1 ORDER BY created_at DESC LIMIT 100",
