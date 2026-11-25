@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { createExecutionApproval, consumeExecutionApproval } from "./approval-store.js";
 
 const request = {
@@ -12,7 +13,7 @@ const request = {
 };
 const diffSha256 = "b".repeat(64);
 
-function fakeDb(rowCount = 1) {
+function fakeDb(updateRowCount = 1) {
   const calls: Array<{ sql: string; values: unknown[] }> = [];
   return {
     calls,
@@ -22,7 +23,7 @@ function fakeDb(rowCount = 1) {
         if (sql.includes("INSERT INTO execution_approvals")) {
           return { rows: [{ id: "33333333-3333-4333-8333-333333333333", expires_at: new Date(Date.now() + 60_000) }], rowCount: 1 };
         }
-        return { rows: rowCount ? [{ id: "33333333-3333-4333-8333-333333333333" }] : [], rowCount };
+        return { rows: updateRowCount ? [{ id: "33333333-3333-4333-8333-333333333333" }] : [], rowCount: updateRowCount };
       }
     }
   };
@@ -35,8 +36,9 @@ test("creates a high-entropy challenge and stores only its SHA-256 digest", asyn
   assert.match(approval.approvalId, /^[0-9a-f-]{36}$/i);
   assert.equal(fake.calls.length, 1);
   assert.match(fake.calls[0].sql, /INSERT INTO execution_approvals/);
+  assert.match(fake.calls[0].sql, /p.github_repository = \$3/);
   assert.equal(fake.calls[0].values[8] === approval.challenge, false);
-  assert.equal(fake.calls[0].values[8], (await import("node:crypto")).createHash("sha256").update(approval.challenge).digest("hex"));
+  assert.equal(fake.calls[0].values[8], createHash("sha256").update(approval.challenge).digest("hex"));
 });
 
 test("consumes only a fully bound approval with a single atomic UPDATE", async () => {
@@ -58,7 +60,7 @@ test("consumes only a fully bound approval with a single atomic UPDATE", async (
   assert.match(call.sql, /diff_sha256 = \$9/);
 });
 
-test("rejects a replay or expired approval when the atomic update returns no row", async () => {
+test("rejects replay or expiration when the atomic update returns no row", async () => {
   const fake = fakeDb(0);
   const consumed = await consumeExecutionApproval(fake.db as never, {
     approvalId: "33333333-3333-4333-8333-333333333333",
@@ -69,9 +71,9 @@ test("rejects a replay or expired approval when the atomic update returns no row
   assert.equal(consumed, false);
 });
 
-test("rejects changed diff, malformed challenge, and malformed execution binding", async () => {
+test("rejects malformed input before touching the database", async () => {
   const fake = fakeDb();
-  const changedDiff = await consumeExecutionApproval(fake.db as never, {
+  const invalidHash = await consumeExecutionApproval(fake.db as never, {
     approvalId: "33333333-3333-4333-8333-333333333333",
     challenge: "A".repeat(43),
     request,
@@ -83,14 +85,36 @@ test("rejects changed diff, malformed challenge, and malformed execution binding
     request,
     diffSha256
   });
-  const changedRevision = await consumeExecutionApproval(fake.db as never, {
+  const malformedRequest = await consumeExecutionApproval(fake.db as never, {
     approvalId: "33333333-3333-4333-8333-333333333333",
     challenge: "A".repeat(43),
+    request: { ...request, revision: "not-a-commit" },
+    diffSha256
+  });
+  assert.equal(invalidHash, false);
+  assert.equal(malformedChallenge, false);
+  assert.equal(malformedRequest, false);
+  assert.equal(fake.calls.length, 0);
+});
+
+test("changed diff or revision cannot consume an existing approval", async () => {
+  const fake = fakeDb(0);
+  const approval = await createExecutionApproval(fake.db as never, request, diffSha256);
+  const changedDiff = await consumeExecutionApproval(fake.db as never, {
+    approvalId: approval.approvalId,
+    challenge: approval.challenge,
+    request,
+    diffSha256: "c".repeat(64)
+  });
+  const changedRevision = await consumeExecutionApproval(fake.db as never, {
+    approvalId: approval.approvalId,
+    challenge: approval.challenge,
     request: { ...request, revision: "c".repeat(40) },
     diffSha256
   });
   assert.equal(changedDiff, false);
-  assert.equal(malformedChallenge, false);
   assert.equal(changedRevision, false);
-  assert.equal(fake.calls.length, 0);
+  assert.equal(fake.calls.length, 3);
+  assert.equal(fake.calls[1].values[8], "c".repeat(64));
+  assert.equal(fake.calls[2].values[4], "c".repeat(40));
 });
