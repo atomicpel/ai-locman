@@ -118,11 +118,11 @@ app.patch("/api/v1/projects/:projectId", async (request, reply) => {
   if (!parsedParams.success) return reply.badRequest(parsedParams.error.message);
   if (!parsedBody.success) return reply.badRequest(parsedBody.error.message);
   const current = await pool.query(
-    "SELECT id, name, description, model, instructions, github_repository AS "githubRepository" FROM projects WHERE id=$1 AND owner_id=$2",
+    "SELECT id, name, description, model, instructions, github_repository FROM projects WHERE id=$1 AND owner_id=$2",
     [parsedParams.data.projectId, DEV_OWNER_ID]
   );
   if (!current.rowCount) return reply.notFound("Проект не найден");
-  const next = { ...current.rows[0], ...parsedBody.data };
+  const next = { ...current.rows[0], githubRepository: current.rows[0].github_repository, ...parsedBody.data };
   const { rows } = await pool.query(
     `UPDATE projects SET name=$2, description=$3, model=$4, instructions=$5, github_repository=$6, updated_at=now()
      WHERE id=$1 RETURNING id, name, description, model, instructions, github_repository, created_at, updated_at`,
