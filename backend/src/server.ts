@@ -14,6 +14,17 @@ await app.register(sensible);
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 const DEV_OWNER_ID = "local-dev-user";
 const DEFAULT_MODEL = process.env.OPENROUTER_DEFAULT_MODEL ?? "openrouter/auto";
+await pool.query(`
+  CREATE TABLE IF NOT EXISTS project_memory (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    section TEXT NOT NULL CHECK (section IN ('architecture','decisions','knowledge')),
+    content TEXT NOT NULL DEFAULT '',
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (project_id, section)
+  )
+`);
+
 
 app.get("/health", async () => ({ status: "ok", service: "ai-locman-api", version: "0.2.0" }));
 
