@@ -14,8 +14,7 @@ export async function ensureArtifactSchema(pool: Pool): Promise<void> {
       created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
       CONSTRAINT task_artifacts_task_project_fk
         FOREIGN KEY (task_id, project_id) REFERENCES agent_tasks(id, project_id) ON DELETE CASCADE,
-      CONSTRAINT task_artifacts_task_path_unique UNIQUE (task_id, artifact_path),
-      CONSTRAINT task_artifacts_task_digest_unique UNIQUE (task_id, sha256)
+      CONSTRAINT task_artifacts_task_path_unique UNIQUE (task_id, artifact_path)
     );
     CREATE INDEX IF NOT EXISTS idx_task_artifacts_project_created
       ON task_artifacts(project_id, created_at DESC);
