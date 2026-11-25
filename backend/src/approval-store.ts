@@ -1,11 +1,9 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { Pool } from "pg";
-import { validateExecutionRequest, type executionRequestSchema } from "./execution-policy.js";
+import { validateExecutionRequest } from "./execution-policy.js";
 
-type ExecutionRequest = ReturnType<typeof validateExecutionRequest>["request"];
 type ApprovalDb = Pick<Pool, "query">;
 
-const APPROVAL_TTL_SECONDS = 5 * 60;
 const sha256 = (value: string) => createHash("sha256").update(value, "utf8").digest("hex");
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const sha256Pattern = /^[a-f0-9]{64}$/i;
@@ -21,13 +19,19 @@ export async function createExecutionApproval(
 
   const challenge = randomBytes(32).toString("base64url");
   const nonceSha256 = sha256(challenge);
-  const expiresAt = new Date(Date.now() + APPROVAL_TTL_SECONDS * 1000).toISOString();
 
+  // The task must belong to this project, and the project must still point at this repository.
+  // Expiry is calculated by PostgreSQL to avoid application/database clock skew.
   const inserted = await db.query(
     `INSERT INTO execution_approvals
       (task_id, project_id, repository, revision, profile, executable, argv,
        diff_sha256, nonce_sha256, expires_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10::timestamptz)
+     SELECT $1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,now() + interval '5 minutes'
+      WHERE EXISTS (
+        SELECT 1 FROM agent_tasks t
+        JOIN projects p ON p.id = t.project_id
+        WHERE t.id = $1 AND t.project_id = $2 AND p.github_repository = $3
+      )
      RETURNING id, expires_at`,
     [
       validated.request.taskId,
@@ -38,12 +42,11 @@ export async function createExecutionApproval(
       validated.executable,
       JSON.stringify(validated.argv),
       diffSha256.toLowerCase(),
-      nonceSha256,
-      expiresAt
+      nonceSha256
     ]
   );
   const row = inserted.rows[0] as { id: string; expires_at: Date | string } | undefined;
-  if (!row) throw new Error("Approval challenge could not be persisted");
+  if (!row) throw new Error("Approval challenge could not be persisted for this task and repository");
   return {
     approvalId: row.id,
     challenge,
