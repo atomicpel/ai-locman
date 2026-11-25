@@ -7,6 +7,9 @@ import { z } from "zod";
 import { Pool } from "pg";
 import { Queue } from "bullmq";
 import { createHash, createSign, randomBytes } from "node:crypto";
+import { assertDevelopmentOnlyRuntime } from "./runtime-safety.js";
+
+assertDevelopmentOnlyRuntime(process.env.NODE_ENV);
 
 const app = Fastify({ logger: true, bodyLimit: 1_000_000 });
 await app.register(helmet);
