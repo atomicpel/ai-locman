@@ -149,7 +149,7 @@ app.post("/api/v1/auth/logout", async (request, reply) => {
 });
 
 // Development MVP only. Do not expose this unauthenticated API to the public internet.
-app.get("/api/v1/projects", async () => {
+app.get("/api/v1/projects", async (request) => {
   const { rows } = await pool.query(
     "SELECT id, name, description, model, github_repository, created_at FROM projects WHERE owner_id = $1 ORDER BY created_at DESC LIMIT 100",
     [ownerId(request)]
@@ -614,8 +614,8 @@ async function githubInstallationRequest(
   return raw ? JSON.parse(raw) as Record<string, unknown> : {};
 }
 
-async function githubRepoToken(owner: string, repo: string): Promise<string> {
-  const installations = await githubInstallationRows(ownerId(request));
+async function githubRepoToken(owner: string, repo: string, sessionOwner: string): Promise<string> {
+  const installations = await githubInstallationRows(sessionOwner);
   for (const installation of installations) {
     const token = await githubInstallationToken(Number(installation.installation_id));
     try {
@@ -634,7 +634,7 @@ const githubRepoParams = z.object({
   repo: z.string().regex(/^[A-Za-z0-9_.-]{1,100}$/)
 });
 
-app.get("/api/v1/github/connect", async (_request, reply) => {
+app.get("/api/v1/github/connect", async (request, reply) => {
   const slug = process.env.GITHUB_APP_SLUG;
   if (!slug || !(process.env.GITHUB_APP_CLIENT_ID ?? process.env.GITHUB_APP_ID) || !process.env.GITHUB_APP_PRIVATE_KEY) {
     return reply.code(503).send({ error: "GitHub App не настроен: добавь GITHUB_APP_SLUG, GITHUB_APP_CLIENT_ID и GITHUB_APP_PRIVATE_KEY в backend .env" });
@@ -683,12 +683,12 @@ app.get("/api/v1/github/callback", async (request, reply) => {
   }
 });
 
-app.get("/api/v1/github/status", async () => {
+app.get("/api/v1/github/status", async (request) => {
   const installations = await githubInstallationRows(ownerId(request));
   return { connected: installations.length > 0, installations };
 });
 
-app.delete("/api/v1/github/connection", async (_request, reply) => {
+app.delete("/api/v1/github/connection", async (request, reply) => {
   await pool.query("DELETE FROM github_installations WHERE owner_id=$1", [ownerId(request)]);
   return reply.code(204).send();
 });
@@ -719,7 +719,7 @@ app.get("/api/v1/github/repositories/:owner/:repo", async (request, reply) => {
   const parsed = githubRepoParams.safeParse(request.params);
   if (!parsed.success) return reply.badRequest(parsed.error.message);
   try {
-    const token = await githubRepoToken(parsed.data.owner, parsed.data.repo);
+    const token = await githubRepoToken(parsed.data.owner, parsed.data.repo, ownerId(request));
     return await githubInstallationRequest(token, "/repos/" + encodeURIComponent(parsed.data.owner) + "/" + encodeURIComponent(parsed.data.repo));
   } catch (error) {
     return reply.code(502).send({ error: error instanceof Error ? error.message : "GitHub API error" });
@@ -730,7 +730,7 @@ app.get("/api/v1/github/repositories/:owner/:repo/branches", async (request, rep
   const parsed = githubRepoParams.safeParse(request.params);
   if (!parsed.success) return reply.badRequest(parsed.error.message);
   try {
-    const token = await githubRepoToken(parsed.data.owner, parsed.data.repo);
+    const token = await githubRepoToken(parsed.data.owner, parsed.data.repo, ownerId(request));
     return await githubInstallationRequest(token, "/repos/" + encodeURIComponent(parsed.data.owner) + "/" + encodeURIComponent(parsed.data.repo) + "/branches?per_page=100");
   } catch (error) {
     return reply.code(502).send({ error: error instanceof Error ? error.message : "GitHub API error" });
@@ -746,7 +746,7 @@ app.get("/api/v1/github/repositories/:owner/:repo/contents", async (request, rep
   if (!parsed.success) return reply.badRequest(parsed.error.message);
   if (!query.success) return reply.badRequest(query.error.message);
   try {
-    const token = await githubRepoToken(parsed.data.owner, parsed.data.repo);
+    const token = await githubRepoToken(parsed.data.owner, parsed.data.repo, ownerId(request));
     const path = query.data.path
       ? "/" + query.data.path.split("/").map(encodeURIComponent).join("/")
       : "";
@@ -767,7 +767,7 @@ app.get("/api/v1/github/repositories/:owner/:repo/commits", async (request, repl
   const parsed = githubRepoParams.safeParse(request.params);
   if (!parsed.success) return reply.badRequest(parsed.error.message);
   try {
-    const token = await githubRepoToken(parsed.data.owner, parsed.data.repo);
+    const token = await githubRepoToken(parsed.data.owner, parsed.data.repo, ownerId(request));
     return await githubInstallationRequest(token, "/repos/" + encodeURIComponent(parsed.data.owner) + "/" + encodeURIComponent(parsed.data.repo) + "/commits?per_page=50");
   } catch (error) {
     return reply.code(502).send({ error: error instanceof Error ? error.message : "GitHub API error" });
@@ -778,7 +778,7 @@ app.get("/api/v1/github/repositories/:owner/:repo/pulls", async (request, reply)
   const parsed = githubRepoParams.safeParse(request.params);
   if (!parsed.success) return reply.badRequest(parsed.error.message);
   try {
-    const token = await githubRepoToken(parsed.data.owner, parsed.data.repo);
+    const token = await githubRepoToken(parsed.data.owner, parsed.data.repo, ownerId(request));
     return await githubInstallationRequest(token, "/repos/" + encodeURIComponent(parsed.data.owner) + "/" + encodeURIComponent(parsed.data.repo) + "/pulls?state=all&per_page=50");
   } catch (error) {
     return reply.code(502).send({ error: error instanceof Error ? error.message : "GitHub API error" });
@@ -789,7 +789,7 @@ app.get("/api/v1/github/repositories/:owner/:repo/actions", async (request, repl
   const parsed = githubRepoParams.safeParse(request.params);
   if (!parsed.success) return reply.badRequest(parsed.error.message);
   try {
-    const token = await githubRepoToken(parsed.data.owner, parsed.data.repo);
+    const token = await githubRepoToken(parsed.data.owner, parsed.data.repo, ownerId(request));
     return await githubInstallationRequest(token, "/repos/" + encodeURIComponent(parsed.data.owner) + "/" + encodeURIComponent(parsed.data.repo) + "/actions/runs?per_page=50");
   } catch (error) {
     return reply.code(502).send({ error: error instanceof Error ? error.message : "GitHub API error" });
@@ -802,7 +802,7 @@ app.get("/api/v1/github/repositories/:owner/:repo/compare", async (request, repl
   if (!parsed.success) return reply.badRequest(parsed.error.message);
   if (!query.success) return reply.badRequest(query.error.message);
   try {
-    const token = await githubRepoToken(parsed.data.owner, parsed.data.repo);
+    const token = await githubRepoToken(parsed.data.owner, parsed.data.repo, ownerId(request));
     const response = await githubInstallationRequest(
       token,
       "/repos/" + encodeURIComponent(parsed.data.owner) + "/" + encodeURIComponent(parsed.data.repo) +
