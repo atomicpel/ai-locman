@@ -556,10 +556,10 @@ app.get("/api/v1/github/callback", async (request, reply) => {
     const login = typeof account?.login === "string" ? account.login : "GitHub account";
     const type = typeof account?.type === "string" ? account.type : "User";
     await pool.query(
-      \`INSERT INTO github_installations (owner_id, installation_id, account_login, account_type)
+      `INSERT INTO github_installations (owner_id, installation_id, account_login, account_type)
        VALUES ($1, $2, $3, $4)
        ON CONFLICT (owner_id, installation_id) DO UPDATE
-       SET account_login=EXCLUDED.account_login, account_type=EXCLUDED.account_type, updated_at=now()\`,
+       SET account_login=EXCLUDED.account_login, account_type=EXCLUDED.account_type, updated_at=now()`,
       [stateResult.rows[0].owner_id, query.data.installation_id, login, type]
     );
     return reply.type("text/html; charset=utf-8").send(
