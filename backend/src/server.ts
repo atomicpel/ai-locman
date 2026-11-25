@@ -8,6 +8,7 @@ import { Pool } from "pg";
 import { Queue } from "bullmq";
 import { createHash, createSign, randomBytes } from "node:crypto";
 import { assertDevelopmentOnlyRuntime } from "./runtime-safety.js";
+import { ensureExecutionApprovalSchema } from "./approval-schema.js";
 
 assertDevelopmentOnlyRuntime(process.env.NODE_ENV);
 
@@ -17,6 +18,7 @@ await app.register(cors, { origin: process.env.NODE_ENV === "production" ? false
 await app.register(sensible);
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+await ensureExecutionApprovalSchema(pool);
 const DEV_OWNER_ID = "local-dev-user";
 const DEFAULT_MODEL = process.env.OPENROUTER_DEFAULT_MODEL ?? "openrouter/auto";
 await pool.query(`
@@ -68,16 +70,6 @@ await pool.query(`
   );
   CREATE INDEX IF NOT EXISTS idx_task_events_task_created ON agent_task_events(task_id,created_at);
 `);
-
-// Idempotent migration also runs for databases with an existing persistent volume.
-await pool.query(`
-  CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_tasks_id_project ON agent_tasks(id, project_id);
-  CREATE TABLE IF NOT EXISTS execution_approvals (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    task_id UUID NOT NULL,
-    project_id UUID NOT NULL,
-    repository TEXT NOT NULL CHECK (repository ~ '^[A-Za-z0-9_-][A-Za-z0-9_.-]{0,99}/[A-Za-z0-9_-][A-Za-z0-9_.-]{0,99}
-
 
 const redisUrl = new URL(process.env.REDIS_URL ?? "redis://127.0.0.1:6379");
 const redisConnection = {
