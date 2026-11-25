@@ -10,26 +10,29 @@
 - История диалогов восстанавливается после перезапуска; в Backend-режиме хранится в PostgreSQL, в Local AI — в локальном хранилище приложения.
 - Память проекта разделена на архитектуру, решения и знания; она подмешивается в контекст модели и не смешивается между проектами.
 - Каталог OpenRouter с поиском и настройкой модели отдельно для каждого проекта.
-- GitHub App installation integration with per-project repository binding, branch/file browser, commit and PR views, Actions runs, and branch diff (read-only).
+- GitHub App integration с привязкой репозитория к проекту, просмотром веток, файлов, коммитов, PR, Actions и diff. GitHub-доступ агента остаётся read-only.
 - Потоковая выдача токенов в Local AI режиме.
 - TypeScript/Fastify API, PostgreSQL и Redis/BullMQ.
-- Отдельный фоновый worker для задач Backend-режима. Сейчас это надёжная очередь LLM-запросов с состояниями и отменой, но ещё не автономный агент, который изменяет репозитории.
-- Docker Compose для локальной инфраструктуры и GitHub Actions для проверки backend и сборки Android.
+- Фоновый worker для задач Backend-режима: планирование, read-only исследование репозитория, журнал событий, независимое ревью и отмена.
+- Базовая политика исполнения команд, fail-closed sandbox controller и хранилище одноразовых подтверждений, привязанных к commit и diff. Реального sandbox runtime пока нет, поэтому выполнение команд выключено.
+- Docker Compose для локальной инфраструктуры и GitHub Actions для проверок backend и сборки Android.
 
 ## Следующие этапы
 
-1. Вложения, потоковая доставка в Backend-режиме, reconnect и push notifications.
-2. GitHub App/OAuth, выбор репозитория, ветки, diff, commits и PR.
-3. Агентный цикл: планирование → безопасные инструменты → независимая проверка → тесты.
-4. Изолированные build workers и выдача APK/установщиков.
-5. Авторизация, разграничение прав и production hardening.
+1. Реальный rootless sandbox runtime на отдельном хосте: изоляция задач, лимиты ресурсов, запрет сети по умолчанию, отмена и гарантированная очистка.
+2. Хранилище артефактов с лимитами размера, хэшированием, проверкой содержимого и сроком хранения.
+3. Полноценная аутентификация, разграничение пользователей и прав; после этого — защищённые GitHub write/PR workflows и экран подтверждения в Android.
+4. Backend streaming, reconnect, вложения и push notifications.
+5. Полная проверка Android UI на эмуляторе и устройстве, включая системные отступы и клавиатуру.
 
-## Безопасность
+## Безопасность и локальный запуск
 
-Текущий MVP использует фиксированного dev-пользователя и не подходит для публичного размещения. Не выставляйте backend в интернет. До удалённого развёртывания обязательны аутентификация, TLS, разграничение доступа и безопасное хранение секретов.
+Текущий MVP использует фиксированного dev-пользователя и не подходит для публичного размещения. Backend и worker запускаются только при явно заданном `NODE_ENV=development` или `NODE_ENV=test`; production и unset environment завершаются с ошибкой. Docker Compose задаёт development mode и публикует порты только на loopback (`127.0.0.1`). Не меняйте эту привязку на публичный интерфейс.
 
-Подробности будут в `docs/ARCHITECTURE.md`, `docs/IMPLEMENTATION_PLAN.md` и `docs/SECURITY_MODEL.md`.
+До удалённого развёртывания обязательны полноценная аутентификация, TLS, разграничение доступа и безопасное хранение секретов. Не подключайте Docker socket к API или обычному agent-worker. Команды остаются заблокированными до развёртывания и проверки отдельного изолированного runtime.
+
+Подробности: `build-workers/EXECUTION_CONTRACT.md`, `docs/ARCHITECTURE.md`, `docs/IMPLEMENTATION_PLAN.md` и `docs/SECURITY_MODEL.md`.
 
 ## GitHub App setup
 
-Инструкция по созданию GitHub App, настройке Setup URL и подключению выбранных репозиториев: [docs/GITHUB_APP_SETUP.md](docs/GITHUB_APP_SETUP.md). На текущем этапе GitHub API read-only; операции записи и merge не включены.
+Инструкция по созданию GitHub App, настройке Setup URL и подключению выбранных репозиториев: [docs/GITHUB_APP_SETUP.md](docs/GITHUB_APP_SETUP.md). На текущем этапе API агента read-only; операции записи и merge не включены.
