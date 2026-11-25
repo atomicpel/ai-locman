@@ -9,7 +9,8 @@ internal data class WorkspaceProject(
     val id: String,
     val name: String,
     val description: String = "",
-    val model: String = "openrouter/auto"
+    val model: String = "openrouter/auto",
+    val githubRepository: String = ""
 )
 
 internal data class WorkspaceConversation(
@@ -67,7 +68,8 @@ internal object WorkspaceStore {
                     id = id,
                     name = item.optString("name", "Проект"),
                     description = item.optString("description"),
-                    model = item.optString("model", "openrouter/auto")
+                    model = item.optString("model", "openrouter/auto"),
+                    githubRepository = item.optString("githubRepository")
                 )
             }
         }.getOrDefault(emptyList())
@@ -80,7 +82,8 @@ internal object WorkspaceStore {
                 .put("id", project.id)
                 .put("name", project.name)
                 .put("description", project.description)
-                .put("model", project.model))
+                .put("model", project.model)
+                .put("githubRepository", project.githubRepository))
         }
         prefs.edit().putString(PROJECTS_KEY, array.toString()).apply()
     }

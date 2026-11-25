@@ -1,6 +1,7 @@
 package cloud.atomicpel.ailocman
 
 import android.os.Bundle
+import android.util.Base64
 import android.content.SharedPreferences
 import java.util.UUID
 import androidx.activity.ComponentActivity
@@ -114,6 +115,16 @@ private fun LocmanApp(
     var showModelPicker by remember { mutableStateOf(false) }
     var tasks by remember { mutableStateOf<List<WorkspaceTask>>(emptyList()) }
     val monitoredTaskIds = remember { mutableStateListOf<String>() }
+    var githubConnected by remember { mutableStateOf(false) }
+    var githubInstallations by remember { mutableStateOf<List<WorkspaceGitHubInstallation>>(emptyList()) }
+    var githubRepositories by remember { mutableStateOf<List<WorkspaceGitHubRepository>>(emptyList()) }
+    var selectedGithubRepository by remember { mutableStateOf<WorkspaceGitHubRepository?>(null) }
+    var githubBranches by remember { mutableStateOf<List<WorkspaceGitHubBranch>>(emptyList()) }
+    var selectedGithubBranch by remember { mutableStateOf("") }
+    var githubPath by remember { mutableStateOf("") }
+    var githubFiles by remember { mutableStateOf<List<WorkspaceGitHubContent>>(emptyList()) }
+    var githubSelectedFilePath by remember { mutableStateOf("") }
+    var githubFileContent by remember { mutableStateOf("") }
     val initialProjects = remember { WorkspaceStore.ensureProjects(preferences) }
     var projects by remember { mutableStateOf(initialProjects) }
     var projectId by remember {
@@ -259,6 +270,7 @@ private fun LocmanApp(
                             "history" -> "ИСТОРИЯ ЧАТОВ"
                             "memory" -> "ПАМЯТЬ ПРОЕКТА"
                             "tasks" -> "ФОНОВЫЕ ЗАДАЧИ"
+                            "github" -> "GITHUB"
                             "settings" -> "НАСТРОЙКИ"
                             else -> "ТВОЯ AI-СТУДИЯ"
                         },
@@ -308,6 +320,42 @@ private fun LocmanApp(
                                     tasks.filter { it.status !in listOf("completed", "failed", "cancelled") }
                                         .forEach { monitorBackendTask(it.id) }
                                     screen = "tasks"
+                                }
+                            })
+                            DropdownMenuItem(text = { Text("GitHub") }, onClick = {
+                                navigationExpanded = false
+                                runTask {
+                                    githubConnected = false
+                                    githubInstallations = emptyList()
+                                    githubRepositories = emptyList()
+                                    selectedGithubRepository = null
+                                    if (!localMode) {
+                                        val info = api(server, "/api/v1/github/status", "GET")
+                                        githubConnected = info.optBoolean("connected")
+                                        val installs = info.optJSONArray("installations") ?: JSONArray()
+                                        githubInstallations = (0 until installs.length()).mapNotNull { i ->
+                                            installs.optJSONObject(i)?.let { item ->
+                                                WorkspaceGitHubInstallation(
+                                                    item.optString("installation_id"),
+                                                    item.optString("account_login"),
+                                                    item.optString("account_type")
+                                                )
+                                            }
+                                        }
+                                        if (githubConnected) {
+                                            githubRepositories = loadGitHubRepositories(server)
+                                            val bound = projects.firstOrNull { it.id == projectId }?.githubRepository.orEmpty()
+                                            selectedGithubRepository = githubRepositories.firstOrNull { it.fullName == bound }
+                                            if (selectedGithubRepository != null) {
+                                                val repo = selectedGithubRepository!!
+                                                githubBranches = loadGitHubBranches(server, repo)
+                                                selectedGithubBranch = repo.defaultBranch
+                                                githubPath = ""
+                                                githubFiles = loadGitHubContents(server, repo, "", selectedGithubBranch)
+                                            }
+                                        }
+                                    }
+                                    screen = "github"
                                 }
                             })
                         }
@@ -603,6 +651,114 @@ private fun LocmanApp(
                     }
                 }
             )
+            "github" -> GitHubScreen(
+                backendAvailable = !localMode,
+                server = server,
+                connected = githubConnected,
+                installations = githubInstallations,
+                repositories = githubRepositories,
+                selectedRepository = selectedGithubRepository,
+                branches = githubBranches,
+                selectedBranch = selectedGithubBranch,
+                currentPath = githubPath,
+                files = githubFiles,
+                selectedFilePath = githubSelectedFilePath,
+                selectedFileContent = githubFileContent,
+                busy = busy,
+                onRefresh = {
+                    runTask {
+                        val info = api(server, "/api/v1/github/status", "GET")
+                        githubConnected = info.optBoolean("connected")
+                        val installs = info.optJSONArray("installations") ?: JSONArray()
+                        githubInstallations = (0 until installs.length()).mapNotNull { i ->
+                            installs.optJSONObject(i)?.let { item ->
+                                WorkspaceGitHubInstallation(item.optString("installation_id"), item.optString("account_login"), item.optString("account_type"))
+                            }
+                        }
+                        githubRepositories = if (githubConnected) loadGitHubRepositories(server) else emptyList()
+                        val bound = projects.firstOrNull { it.id == projectId }?.githubRepository.orEmpty()
+                        selectedGithubRepository = githubRepositories.firstOrNull { it.fullName == bound }
+                        if (selectedGithubRepository != null) {
+                            val repo = selectedGithubRepository!!
+                            githubBranches = loadGitHubBranches(server, repo)
+                            selectedGithubBranch = repo.defaultBranch
+                            githubPath = ""
+                            githubFiles = loadGitHubContents(server, repo, "", selectedGithubBranch)
+                        }
+                        status = "GitHub обновлён"
+                    }
+                },
+                onSelectRepository = { repo ->
+                    runTask {
+                        selectedGithubRepository = repo
+                        githubPath = ""
+                        githubSelectedFilePath = ""
+                        githubFileContent = ""
+                        githubBranches = loadGitHubBranches(server, repo)
+                        selectedGithubBranch = repo.defaultBranch
+                        githubFiles = loadGitHubContents(server, repo, "", selectedGithubBranch)
+                        val updated = projects.map { item ->
+                            if (item.id == projectId) item.copy(githubRepository = repo.fullName) else item
+                        }
+                        projects = updated
+                        if (localMode) {
+                            WorkspaceStore.saveProjects(preferences, updated)
+                        } else {
+                            api(server, "/api/v1/projects/$projectId", "PATCH", JSONObject().put("githubRepository", repo.fullName))
+                        }
+                        status = "Репозиторий привязан к проекту"
+                    }
+                },
+                onBackToRepositories = {
+                    selectedGithubRepository = null
+                    githubSelectedFilePath = ""
+                    githubFileContent = ""
+                },
+                onSelectBranch = { branch ->
+                    val repo = selectedGithubRepository
+                    if (repo != null) runTask {
+                        selectedGithubBranch = branch
+                        githubPath = ""
+                        githubSelectedFilePath = ""
+                        githubFileContent = ""
+                        githubFiles = loadGitHubContents(server, repo, "", branch)
+                    }
+                },
+                onNavigateDirectory = { directory ->
+                    val repo = selectedGithubRepository
+                    if (repo != null) runTask {
+                        githubPath = directory
+                        githubSelectedFilePath = ""
+                        githubFileContent = ""
+                        githubFiles = loadGitHubContents(server, repo, directory, selectedGithubBranch)
+                    }
+                },
+                onOpenFile = { item ->
+                    val repo = selectedGithubRepository
+                    if (repo != null) runTask {
+                        val raw = githubApiRaw(server, githubContentsRoute(repo, item.path, selectedGithubBranch))
+                        val json = JSONObject(raw)
+                        require(json.optString("encoding") == "base64") { "GitHub не вернул текстовый файл в Base64" }
+                        val encoded = json.optString("content").replace("\n", "").replace("\r", "")
+                        require(encoded.length <= 1_400_000) { "Файл больше 1 МБ — предпросмотр отключён" }
+                        val bytes = Base64.decode(encoded, Base64.DEFAULT)
+                        require(bytes.size <= 1_000_000) { "Файл больше 1 МБ — предпросмотр отключён" }
+                        githubSelectedFilePath = item.path
+                        githubFileContent = String(bytes, Charsets.UTF_8)
+                    }
+                },
+                onCloseFile = {
+                    githubSelectedFilePath = ""
+                    githubFileContent = ""
+                },
+                onUpPath = {
+                    val repo = selectedGithubRepository
+                    if (repo != null) runTask {
+                        githubPath = githubPath.substringBeforeLast("/", "")
+                        githubFiles = loadGitHubContents(server, repo, githubPath, selectedGithubBranch)
+                    }
+                }
+            )
             else -> {
             Column(Modifier.fillMaxSize().padding(padding)) {
                 Row(
@@ -882,12 +1038,93 @@ private suspend fun loadBackendTasks(server: String, projectId: String): List<Wo
 private suspend fun loadBackendTask(server: String, taskId: String): WorkspaceTask =
     workspaceTaskFromJson(api(server, "/api/v1/tasks/$taskId", "GET"))
 
+
+private fun githubContentsRoute(repo: WorkspaceGitHubRepository, path: String, branch: String): String {
+    val owner = repo.fullName.substringBefore("/")
+    val name = repo.fullName.substringAfter("/")
+    val params = buildList {
+        if (path.isNotBlank()) add("path=" + java.net.URLEncoder.encode(path, "UTF-8"))
+        if (branch.isNotBlank()) add("ref=" + java.net.URLEncoder.encode(branch, "UTF-8"))
+    }.joinToString("&")
+    return "/api/v1/github/repositories/$owner/$name/contents" + if (params.isBlank()) "" else "?$params"
+}
+
+private suspend fun githubApiRaw(server: String, path: String): String = withContext(Dispatchers.IO) {
+    val root = server.trim().trimEnd("/")
+    require(root.startsWith("http://") || root.startsWith("https://")) { "Адрес backend должен начинаться с http:// или https://" }
+    val connection = (URL(root + path).openConnection() as HttpURLConnection).apply {
+        requestMethod = "GET"
+        connectTimeout = 15_000
+        readTimeout = 60_000
+        setRequestProperty("Accept", "application/json")
+    }
+    try {
+        val code = connection.responseCode
+        val stream = if (code in 200..299) connection.inputStream else connection.errorStream
+        val raw = stream?.bufferedReader()?.use { it.readText() } ?: ""
+        if (code !in 200..299) {
+            val detail = runCatching { JSONObject(raw).optString("error") }.getOrNull()
+            throw IllegalStateException(detail?.takeIf { it.isNotBlank() } ?: "Backend HTTP $code")
+        }
+        raw
+    } finally { connection.disconnect() }
+}
+
+private suspend fun loadGitHubRepositories(server: String): List<WorkspaceGitHubRepository> {
+    val data = api(server, "/api/v1/github/repositories", "GET").optJSONArray("items") ?: JSONArray()
+    return (0 until data.length()).mapNotNull { i ->
+        data.optJSONObject(i)?.let { item ->
+            val fullName = item.optString("full_name")
+            if (fullName.isBlank()) null else WorkspaceGitHubRepository(
+                id = item.opt("id")?.toString() ?: fullName,
+                fullName = fullName,
+                isPrivate = item.optBoolean("private"),
+                description = item.optString("description"),
+                defaultBranch = item.optString("default_branch", "main"),
+                htmlUrl = item.optString("html_url")
+            )
+        }
+    }.sortedBy { it.fullName.lowercase() }
+}
+
+private suspend fun loadGitHubBranches(server: String, repo: WorkspaceGitHubRepository): List<WorkspaceGitHubBranch> {
+    val owner = repo.fullName.substringBefore("/")
+    val name = repo.fullName.substringAfter("/")
+    val raw = githubApiRaw(server, "/api/v1/github/repositories/$owner/$name/branches")
+    val array = JSONArray(raw)
+    return (0 until array.length()).mapNotNull { i ->
+        array.optJSONObject(i)?.let { item ->
+            val branchName = item.optString("name")
+            if (branchName.isBlank()) null else WorkspaceGitHubBranch(branchName, item.optBoolean("protected"))
+        }
+    }
+}
+
+private suspend fun loadGitHubContents(
+    server: String, repo: WorkspaceGitHubRepository, path: String, branch: String
+): List<WorkspaceGitHubContent> {
+    val raw = githubApiRaw(server, githubContentsRoute(repo, path, branch))
+    val array = JSONArray(raw)
+    return (0 until array.length()).mapNotNull { i ->
+        array.optJSONObject(i)?.let { item ->
+            val name = item.optString("name")
+            val itemPath = item.optString("path")
+            if (itemPath.isBlank()) null else WorkspaceGitHubContent(
+                name = name,
+                path = itemPath,
+                type = item.optString("type"),
+                size = item.optLong("size")
+            )
+        }
+    }.sortedWith(compareBy<WorkspaceGitHubContent> { it.type != "dir" }.thenBy { it.name.lowercase() })
+}
+
 private suspend fun loadBackendProjects(server: String): List<WorkspaceProject> {
     val data = api(server, "/api/v1/projects", "GET").optJSONArray("items") ?: JSONArray()
     return (0 until data.length()).mapNotNull { i ->
         data.optJSONObject(i)?.let { item ->
             val id = item.optString("id")
-            if (id.isBlank()) null else WorkspaceProject(id, item.optString("name", "Проект"), item.optString("description"), item.optString("model", "openrouter/auto"))
+            if (id.isBlank()) null else WorkspaceProject(id, item.optString("name", "Проект"), item.optString("description"), item.optString("model", "openrouter/auto"), item.optString("github_repository"))
         }
     }
 }

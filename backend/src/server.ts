@@ -26,6 +26,7 @@ await pool.query(`
     UNIQUE (project_id, section)
   );
   ALTER TABLE projects ADD COLUMN IF NOT EXISTS model TEXT NOT NULL DEFAULT 'openrouter/auto';
+  ALTER TABLE projects ADD COLUMN IF NOT EXISTS github_repository TEXT NOT NULL DEFAULT '';
   CREATE TABLE IF NOT EXISTS github_installations (
     owner_id TEXT NOT NULL,
     installation_id BIGINT NOT NULL,
@@ -78,7 +79,7 @@ app.get("/health", async () => ({ status: "ok", service: "ai-locman-api", versio
 // Development MVP only. Do not expose this unauthenticated API to the public internet.
 app.get("/api/v1/projects", async () => {
   const { rows } = await pool.query(
-    "SELECT id, name, description, model, created_at FROM projects WHERE owner_id = $1 ORDER BY created_at DESC LIMIT 100",
+    "SELECT id, name, description, model, github_repository, created_at FROM projects WHERE owner_id = $1 ORDER BY created_at DESC LIMIT 100",
     [DEV_OWNER_ID]
   );
   return { items: rows };
@@ -107,6 +108,7 @@ const updateProjectSchema = z.object({
   name: z.string().trim().min(1).max(100).optional(),
   description: z.string().max(2000).optional(),
   model: z.string().trim().min(1).max(200).optional(),
+  githubRepository: z.string().max(201).optional(),
   instructions: z.string().max(10000).optional()
 }).refine((value) => Object.keys(value).length > 0, "Нечего обновлять");
 
@@ -116,15 +118,15 @@ app.patch("/api/v1/projects/:projectId", async (request, reply) => {
   if (!parsedParams.success) return reply.badRequest(parsedParams.error.message);
   if (!parsedBody.success) return reply.badRequest(parsedBody.error.message);
   const current = await pool.query(
-    "SELECT id, name, description, model, instructions FROM projects WHERE id=$1 AND owner_id=$2",
+    "SELECT id, name, description, model, instructions, github_repository AS "githubRepository" FROM projects WHERE id=$1 AND owner_id=$2",
     [parsedParams.data.projectId, DEV_OWNER_ID]
   );
   if (!current.rowCount) return reply.notFound("Проект не найден");
   const next = { ...current.rows[0], ...parsedBody.data };
   const { rows } = await pool.query(
-    `UPDATE projects SET name=$2, description=$3, model=$4, instructions=$5, updated_at=now()
-     WHERE id=$1 RETURNING id, name, description, model, instructions, created_at, updated_at`,
-    [parsedParams.data.projectId, next.name, next.description, next.model ?? DEFAULT_MODEL, next.instructions ?? ""]
+    `UPDATE projects SET name=$2, description=$3, model=$4, instructions=$5, github_repository=$6, updated_at=now()
+     WHERE id=$1 RETURNING id, name, description, model, instructions, github_repository, created_at, updated_at`,
+    [parsedParams.data.projectId, next.name, next.description, next.model ?? DEFAULT_MODEL, next.instructions ?? "", next.githubRepository ?? ""]
   );
   return rows[0];
 });
@@ -484,7 +486,11 @@ async function githubInstallationRows() {
   return rows as Array<{ installation_id: string | number; account_login: string; account_type: string }>;
 }
 
-async function githubInstallationRequest(token: string, path: string, accept = "application/vnd.github+json") {
+async function githubInstallationRequest(token: string, path: string, accept: "application/vnd.github.diff"): Promise<string>;
+async function githubInstallationRequest(token: string, path: string, accept?: string): Promise<Record<string, unknown>>;
+async function githubInstallationRequest(
+  token: string, path: string, accept = "application/vnd.github+json"
+): Promise<Record<string, unknown> | string> {
   const response = await fetch(GITHUB_API + path, {
     headers: {
       Accept: accept,

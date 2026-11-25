@@ -12,6 +12,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.unit.dp
 
 @Composable
@@ -249,6 +250,164 @@ internal fun TasksScreen(
                     }
                 }
             }
+        }
+    }
+}
+
+
+@Composable
+internal fun GitHubScreen(
+    backendAvailable: Boolean,
+    server: String,
+    connected: Boolean,
+    installations: List<WorkspaceGitHubInstallation>,
+    repositories: List<WorkspaceGitHubRepository>,
+    selectedRepository: WorkspaceGitHubRepository?,
+    branches: List<WorkspaceGitHubBranch>,
+    selectedBranch: String,
+    currentPath: String,
+    files: List<WorkspaceGitHubContent>,
+    selectedFilePath: String,
+    selectedFileContent: String,
+    busy: Boolean,
+    onRefresh: () -> Unit,
+    onSelectRepository: (WorkspaceGitHubRepository) -> Unit,
+    onBackToRepositories: () -> Unit,
+    onSelectBranch: (String) -> Unit,
+    onNavigateDirectory: (String) -> Unit,
+    onOpenFile: (WorkspaceGitHubContent) -> Unit,
+    onCloseFile: () -> Unit,
+    onUpPath: () -> Unit
+) {
+    val uriHandler = LocalUriHandler.current
+    var branchMenu by remember { mutableStateOf(false) }
+    Column(Modifier.fillMaxSize().padding(horizontal = 18.dp, vertical = 12.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("GitHub", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+                Text(
+                    if (connected) "Подключение установлено" else "Подключение репозиториев",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            TextButton(onClick = onRefresh, enabled = backendAvailable && !busy) { Text("Обновить") }
+        }
+        Spacer(Modifier.height(12.dp))
+        if (!backendAvailable) {
+            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Нужен Backend", fontWeight = FontWeight.SemiBold)
+                    Text("GitHub App подключается на сервере. Переключись в режим Backend и укажи доступный адрес сервера.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        } else if (!connected) {
+            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("Подключи GitHub App", fontWeight = FontWeight.SemiBold)
+                    Text("Backend откроет GitHub, где можно установить приложение и выбрать репозитории. После установки вернись сюда и нажми «Обновить».",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Button(
+                        onClick = { uriHandler.openUri(server.trimEnd('/') + "/api/v1/github/connect") },
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("Установить GitHub App") }
+                }
+            }
+        } else if (selectedRepository == null) {
+            if (installations.isNotEmpty()) {
+                Text(
+                    "Установки: " + installations.joinToString { it.accountLogin },
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Spacer(Modifier.height(10.dp))
+            }
+            if (repositories.isEmpty()) {
+                Text("GitHub App установлено, но доступных репозиториев не найдено.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            } else {
+                Text("Репозитории (\${repositories.size})", fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(8.dp))
+                LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(repositories, key = { it.id }) { repository ->
+                        Card(
+                            modifier = Modifier.fillMaxWidth().clickable { onSelectRepository(repository) },
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                            shape = RoundedCornerShape(14.dp)
+                        ) {
+                            Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(repository.fullName, modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
+                                    Text(if (repository.isPrivate) "Private" else "Public",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                                if (repository.description.isNotBlank()) {
+                                    Text(repository.description, maxLines = 2, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        style = MaterialTheme.typography.bodySmall)
+                                }
+                                Text("Ветка: \${repository.defaultBranch}", color = MaterialTheme.colorScheme.primary,
+                                    style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = onBackToRepositories) { Text("← Репозитории") }
+                Spacer(Modifier.width(6.dp))
+                Text(selectedRepository.fullName, fontWeight = FontWeight.SemiBold, maxLines = 1)
+            }
+            Spacer(Modifier.height(8.dp))
+            Box {
+                OutlinedButton(onClick = { branchMenu = true }, enabled = branches.isNotEmpty() && !busy) {
+                    Text("Ветка: \${selectedBranch.ifBlank { selectedRepository.defaultBranch }}")
+                }
+                DropdownMenu(expanded = branchMenu, onDismissRequest = { branchMenu = false }) {
+                    branches.forEach { branch ->
+                        DropdownMenuItem(
+                            text = { Text(branch.name + if (branch.isProtected) " · protected" else "") },
+                            onClick = { branchMenu = false; onSelectBranch(branch.name) }
+                        )
+                    }
+                }
+            }
+            Spacer(Modifier.height(6.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(currentPath.ifBlank { "/" }, modifier = Modifier.weight(1f),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+                if (currentPath.isNotBlank()) TextButton(onClick = onUpPath) { Text("Вверх") }
+            }
+            if (selectedFilePath.isNotBlank()) {
+                TextButton(onClick = onCloseFile) { Text("← К списку файлов") }
+                Card(Modifier.fillMaxWidth().weight(1f),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+                    Text(selectedFileContent, modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(12.dp),
+                        style = MaterialTheme.typography.bodySmall)
+                }
+            } else {
+                LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    items(files, key = { it.path }) { item ->
+                        Row(
+                            Modifier.fillMaxWidth().clickable {
+                                if (item.type == "dir") onNavigateDirectory(item.path) else onOpenFile(item)
+                            }.padding(vertical = 8.dp, horizontal = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(if (item.type == "dir") "📁" else "📄")
+                            Spacer(Modifier.width(10.dp))
+                            Text(item.name, modifier = Modifier.weight(1f), maxLines = 1)
+                            if (item.size > 0) Text("\${item.size} B", style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    }
+                }
+            }
+        }
+        if (busy) {
+            Spacer(Modifier.height(8.dp))
+            LinearProgressIndicator(Modifier.fillMaxWidth())
         }
     }
 }
