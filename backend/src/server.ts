@@ -9,6 +9,7 @@ import { Queue } from "bullmq";
 import { createHash, createSign, randomBytes } from "node:crypto";
 import { assertDevelopmentOnlyRuntime } from "./runtime-safety.js";
 import { ensureExecutionApprovalSchema } from "./approval-schema.js";
+import { ensureArtifactSchema } from "./artifact-schema.js";
 
 assertDevelopmentOnlyRuntime(process.env.NODE_ENV);
 
@@ -19,6 +20,7 @@ await app.register(sensible);
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 await ensureExecutionApprovalSchema(pool);
+await ensureArtifactSchema(pool);
 const DEV_OWNER_ID = "local-dev-user";
 const DEFAULT_MODEL = process.env.OPENROUTER_DEFAULT_MODEL ?? "openrouter/auto";
 await pool.query(`
