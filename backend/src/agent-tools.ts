@@ -5,7 +5,21 @@ import { z } from "zod";
 export type GitHubToolContext = { token: string; owner: string; repo: string };
 const base = "https://api.github.com";
 const version = "2026-03-10";
-const safePath = z.string().max(1000).refine(v => !v.startsWith("/") && !v.split("/").includes(".."), "Invalid path");
+const safePath = z.string().min(1).max(1000).refine((value) => {
+  if (
+    value.startsWith("/") ||
+    value.includes("\\\\") ||
+    value.includes(String.fromCharCode(0)) ||
+    /^[A-Za-z]:/.test(value)
+  ) return false;
+  return value.split("/").every((segment) =>
+    segment.length > 0 && segment !== "." && segment !== ".."
+  );
+}, "Invalid repository path");
+
+export function isSafeGitHubPath(value: string): boolean {
+  return safePath.safeParse(value).success;
+}
 const schemas = {
   "github.list_branches": z.object({}).strict(),
   "github.list_files": z.object({ path: safePath.optional(), ref: z.string().min(1).max(255).optional() }).strict(),
