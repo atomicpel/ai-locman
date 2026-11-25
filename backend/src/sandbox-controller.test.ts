@@ -44,3 +44,14 @@ test("sandbox controller rejects artifact traversal even while disabled", async 
     (error: unknown) => error instanceof Error && error.name === "ZodError",
   );
 });
+
+test("sandbox controller enforces the artifact count limit", async () => {
+  const controller = createSandboxController();
+  await assert.rejects(
+    controller.run({
+      ...validRequest,
+      artifactPaths: Array.from({ length: 33 }, (_, index) => `artifacts/${index}.txt`),
+    }),
+    (error: unknown) => error instanceof Error && error.name === "ZodError",
+  );
+});
