@@ -32,8 +32,11 @@
 
 ## Stage 3 — autonomous agent
 - [x] Redis/BullMQ durable queue, PostgreSQL task records, status polling and cancellation.
-- [ ] Planner → implementer → independent reviewer → test/fix loop. Current worker performs one OpenRouter completion only; it is not yet an autonomous coding agent.
-- [ ] Tool registry with schemas, permission policy, approvals and audit trail.
+- [x] Planner → bounded read-only GitHub investigation → independent reviewer for background tasks.
+- [x] Zod-validated GitHub read tools scoped to the repository attached to the project; write operations are not registered.
+- [x] PostgreSQL event journal for plan/tool/review/notice; task event API and Android task execution history.
+- [ ] Implementer that edits files on a feature branch, with explicit approval before applying or pushing changes.
+- [ ] Test/fix loop inside isolated worker; no shell or arbitrary code execution is allowed in the current worker.
 - [ ] Checkpoints and reliable resume after worker restart.
 
 ## Stage 4 — isolated build workers

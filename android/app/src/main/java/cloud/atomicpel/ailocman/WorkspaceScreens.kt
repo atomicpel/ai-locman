@@ -211,8 +211,9 @@ internal fun TasksScreen(
                     val terminal = task.status in listOf("completed", "failed", "cancelled")
                     val statusText = when (task.status) {
                         "queued" -> "В очереди"
-                        "planning" -> "Подготовка"
+                        "planning" -> "Планирование"
                         "running" -> "Выполняется"
+                        "reviewing" -> "Проверка ответа"
                         "waiting_approval" -> "Ожидает подтверждения"
                         "testing" -> "Проверка"
                         "completed" -> "Завершена"

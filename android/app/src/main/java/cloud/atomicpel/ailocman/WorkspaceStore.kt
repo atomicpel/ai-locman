@@ -273,3 +273,11 @@ internal data class WorkspaceGitHubRun(
     val createdAt: String,
     val htmlUrl: String
 )
+
+internal data class WorkspaceTaskEvent(
+    val id: String,
+    val type: String,
+    val toolName: String,
+    val result: String,
+    val createdAt: String
+)
