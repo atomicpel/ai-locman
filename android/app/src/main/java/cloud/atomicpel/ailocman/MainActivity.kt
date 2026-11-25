@@ -87,7 +87,7 @@ class MainActivity : ComponentActivity() {
                             .putBoolean("local_mode", local).putString("project", project).apply()
                     },
                     onSaveKey = { key -> securePrefs?.edit()?.putString("openrouter_key", key)?.apply() },
-                    onSaveBackendSession = { token -> securePrefs?.edit()?.putString("backend_session", token)?.apply() },
+                    onSaveBackendSession = { token -> checkNotNull(securePrefs) { "Защищённое хранилище Android недоступно" }.edit().putString("backend_session", token).apply() },
                     onClearBackendSession = { securePrefs?.edit()?.remove("backend_session")?.apply() }
                 )
             }
