@@ -1,7 +1,7 @@
 name: Backend CI
 on:
   push:
-    paths: ["backend/**", "agent-core/**", ".github/workflows/backend-ci.yml"]
+    paths: ["backend/**", "agent-core/**", "infrastructure/**", "build-workers/**", "README.md", ".github/workflows/backend-ci.yml"]
   pull_request:
     paths: ["backend/**", "agent-core/**"]
   workflow_dispatch:
@@ -12,6 +12,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Validate local infrastructure YAML
+        run: ruby -e 'require "yaml"; YAML.load_file("infrastructure/docker-compose.yml")'
       - uses: actions/setup-node@v4
         with:
           node-version: 22
