@@ -51,9 +51,9 @@ test("consumes only a fully bound approval with a single atomic UPDATE", async (
     diffSha256
   });
   assert.equal(consumed, true);
+  const call = fake.calls[1];
   assert.match(call.sql, /EXISTS \(/);
   assert.match(call.sql, /github_repository = execution_approvals.repository/);
-  const call = fake.calls[1];
   assert.match(call.sql, /UPDATE execution_approvals/);
   assert.match(call.sql, /consumed_at IS NULL/);
   assert.match(call.sql, /expires_at > now\(\)/);
