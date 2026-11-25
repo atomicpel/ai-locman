@@ -365,11 +365,22 @@ private fun LocmanApp(
                                             conversationTitle = created.optString("title", text.take(70))
                                             preferences.edit().putString("active_conversation_$projectId", conversationId).apply()
                                         }
+                                        var streamingMessageIndex = -1
                                         val answer = if (localMode) {
-                                            openRouterChat(
-                                                apiKey, model, history, projects.firstOrNull { it.id == projectId }?.name ?: projectName,
-                                                memory
-                                            )
+                                            streamingMessageIndex = lines.size
+                                            lines.add(ChatLine("assistant", ""))
+                                            try {
+                                                openRouterChat(
+                                                    apiKey, model, history, projects.firstOrNull { it.id == projectId }?.name ?: projectName,
+                                                    memory
+                                                ) { chunk ->
+                                                    val current = lines.getOrNull(streamingMessageIndex)?.text.orEmpty()
+                                                    lines[streamingMessageIndex] = ChatLine("assistant", current + chunk)
+                                                }
+                                            } catch (error: Exception) {
+                                                if (streamingMessageIndex == lines.lastIndex) lines.removeAt(streamingMessageIndex)
+                                                throw error
+                                            }
                                         } else {
                                             require(projectId.isNotBlank()) { "Сначала выбери или создай проект" }
                                             val queued = api(server, "/api/v1/projects/$projectId/tasks", "POST",
@@ -381,7 +392,11 @@ private fun LocmanApp(
                                             status = "Задача добавлена в очередь. Она продолжится на сервере."
                                             return@runTask
                                         }
-                                        lines.add(ChatLine("assistant", answer))
+                                        if (streamingMessageIndex >= 0) {
+                                            lines[streamingMessageIndex] = ChatLine("assistant", answer)
+                                        } else {
+                                            lines.add(ChatLine("assistant", answer))
+                                        }
                                         val isFirstMessage = conversationTitle == "Новый чат"
                                         conversationTitle = if (isFirstMessage) text.take(70) else conversationTitle
                                         if (!localMode && isFirstMessage) {
@@ -431,7 +446,7 @@ private fun LocmanApp(
                 onCreateProject = {
                     runTask {
                         val result = api(server, "/api/v1/projects", "POST",
-                            JSONObject().put("name", projectName).put("description", "Проект AI Locman"))
+                            JSONObject().put("name", projectName).put("description", "Проект AI Locman").put("model", model))
                         projectId = result.getString("id")
                         status = "Проект создан на backend"
                     }
@@ -451,7 +466,10 @@ private fun LocmanApp(
                     runTask {
                         projectId = selected.id
                         projectName = selected.name
-                        preferences.edit().putString("active_project_id", selected.id).putString("project", selected.name).apply()
+                        model = if (localMode) {
+                            preferences.getString("project_model_${selected.id}", selected.model) ?: selected.model
+                        } else selected.model
+                        preferences.edit().putString("active_project_id", selected.id).putString("project", selected.name).putString("model", model).apply()
                         conversations = if (localMode) WorkspaceStore.loadConversations(preferences, selected.id)
                             else loadBackendConversations(server, selected.id)
                         tasks = if (localMode) emptyList() else loadBackendTasks(server, selected.id)
@@ -477,13 +495,13 @@ private fun LocmanApp(
                 onCreate = { name ->
                     runTask {
                         val created = if (localMode) {
-                            val item = WorkspaceProject(UUID.randomUUID().toString(), name)
+                            val item = WorkspaceProject(UUID.randomUUID().toString(), name, model = model)
                             projects = projects + item
                             WorkspaceStore.saveProjects(preferences, projects)
                             item
                         } else {
-                            val json = api(server, "/api/v1/projects", "POST", JSONObject().put("name", name).put("description", "Проект AI Locman"))
-                            WorkspaceProject(json.getString("id"), json.optString("name", name), json.optString("description"))
+                            val json = api(server, "/api/v1/projects", "POST", JSONObject().put("name", name).put("description", "Проект AI Locman").put("model", model))
+                            WorkspaceProject(json.getString("id"), json.optString("name", name), json.optString("description"), json.optString("model", model))
                                 .also { projects = loadBackendProjects(server) }
                         }
                         projectId = created.id
@@ -724,6 +742,20 @@ private fun LocmanApp(
                                 Column(
                                     Modifier.fillMaxWidth().clickable {
                                         model = item.id
+                                        val updatedProject = projects.firstOrNull { it.id == projectId }?.copy(model = item.id)
+                                        if (updatedProject != null) {
+                                            projects = projects.map { if (it.id == projectId) updatedProject else it }
+                                            if (localMode) {
+                                                WorkspaceStore.saveProjects(preferences, projects)
+                                            } else {
+                                                scope.launch {
+                                                    runCatching {
+                                                        api(server, "/api/v1/projects/$projectId", "PATCH", JSONObject().put("model", item.id))
+                                                    }.onFailure { status = it.message ?: "Не удалось сохранить модель проекта" }
+                                                }
+                                            }
+                                        }
+                                        preferences.edit().putString("project_model_$projectId", item.id).putString("model", item.id).apply()
                                         modelSearch = ""
                                         showModelPicker = false
                                     }.padding(vertical = 10.dp)
@@ -855,7 +887,7 @@ private suspend fun loadBackendProjects(server: String): List<WorkspaceProject> 
     return (0 until data.length()).mapNotNull { i ->
         data.optJSONObject(i)?.let { item ->
             val id = item.optString("id")
-            if (id.isBlank()) null else WorkspaceProject(id, item.optString("name", "Проект"), item.optString("description"))
+            if (id.isBlank()) null else WorkspaceProject(id, item.optString("name", "Проект"), item.optString("description"), item.optString("model", "openrouter/auto"))
         }
     }
 }
@@ -911,7 +943,7 @@ private suspend fun fetchOpenRouterModels(key: String): List<ModelInfo> = withCo
 
 private suspend fun openRouterChat(
     key: String, model: String, history: List<Pair<String, String>>,
-    projectName: String, memory: WorkspaceMemory
+    projectName: String, memory: WorkspaceMemory, onChunk: (String) -> Unit
 ): String = withContext(Dispatchers.IO) {
     require(key.isNotBlank()) { "Добавь ключ OpenRouter в настройках" }
     require(model.isNotBlank()) { "Выбери модель в настройках" }
@@ -924,7 +956,7 @@ private suspend fun openRouterChat(
         "Ты — AI Locman, русскоязычный помощник по разработке. Текущий проект: $projectName. Используй только его память и не смешивай данные проектов.\n\n$memoryContext"
     ))
     history.forEach { (role, content) -> messages.put(JSONObject().put("role", role).put("content", content)) }
-    val body = JSONObject().put("model", model).put("messages", messages)
+    val body = JSONObject().put("model", model).put("messages", messages).put("stream", true)
     val connection = (URL("https://openrouter.ai/api/v1/chat/completions").openConnection() as HttpURLConnection).apply {
         requestMethod = "POST"
         connectTimeout = 15_000
@@ -932,20 +964,42 @@ private suspend fun openRouterChat(
         doOutput = true
         setRequestProperty("Authorization", "Bearer $key")
         setRequestProperty("Content-Type", "application/json; charset=utf-8")
-        setRequestProperty("Accept", "application/json")
+        setRequestProperty("Accept", "text/event-stream")
     }
     try {
         connection.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
         val code = connection.responseCode
-        val stream = if (code in 200..299) connection.inputStream else connection.errorStream
-        val raw = stream?.bufferedReader()?.use { it.readText() } ?: "{}"
-        val json = JSONObject(raw)
         if (code !in 200..299) {
-            val detail = json.optJSONObject("error")?.optString("message")
+            val raw = connection.errorStream?.bufferedReader()?.use { it.readText() } ?: "{}"
+            val detail = runCatching { JSONObject(raw).optJSONObject("error")?.optString("message") }.getOrNull()
             throw IllegalStateException(detail?.takeIf { it.isNotBlank() } ?: "OpenRouter вернул HTTP $code")
         }
-        json.optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("message")?.optString("content")
-            ?.takeIf { it.isNotBlank() } ?: "Модель вернула пустой ответ"
+        val answer = StringBuilder()
+        connection.inputStream.bufferedReader().use { reader ->
+            while (true) {
+                val line = reader.readLine() ?: break
+                if (!line.startsWith("data:")) continue
+                val data = line.removePrefix("data:").trim()
+                if (data == "[DONE]") break
+                val packet = runCatching { JSONObject(data) }.getOrNull() ?: continue
+                val delta = packet.optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("delta")?.opt("content")
+                val chunk = when (delta) {
+                    is String -> delta
+                    is JSONArray -> buildString {
+                        for (i in 0 until delta.length()) {
+                            val part = delta.optJSONObject(i)
+                            append(part?.optString("text").orEmpty())
+                        }
+                    }
+                    else -> ""
+                }
+                if (chunk.isNotEmpty()) {
+                    answer.append(chunk)
+                    withContext(kotlinx.coroutines.Dispatchers.Main) { onChunk(chunk) }
+                }
+            }
+        }
+        answer.toString().takeIf { it.isNotBlank() } ?: "Модель вернула пустой ответ"
     } finally { connection.disconnect() }
 }
 

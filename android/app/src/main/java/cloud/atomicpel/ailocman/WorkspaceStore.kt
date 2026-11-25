@@ -8,7 +8,8 @@ import java.util.UUID
 internal data class WorkspaceProject(
     val id: String,
     val name: String,
-    val description: String = ""
+    val description: String = "",
+    val model: String = "openrouter/auto"
 )
 
 internal data class WorkspaceConversation(
@@ -47,7 +48,8 @@ internal object WorkspaceStore {
         if (saved.isNotEmpty()) return saved
         val initial = WorkspaceProject(
             id = prefs.getString("active_project_id", null) ?: UUID.randomUUID().toString(),
-            name = prefs.getString("project", "Мой первый проект") ?: "Мой первый проект"
+            name = prefs.getString("project", "Мой первый проект") ?: "Мой первый проект",
+            model = prefs.getString("model", "openrouter/auto") ?: "openrouter/auto"
         )
         saveProjects(prefs, listOf(initial))
         prefs.edit().putString("active_project_id", initial.id).apply()
@@ -64,7 +66,8 @@ internal object WorkspaceStore {
                 if (id.isBlank()) null else WorkspaceProject(
                     id = id,
                     name = item.optString("name", "Проект"),
-                    description = item.optString("description")
+                    description = item.optString("description"),
+                    model = item.optString("model", "openrouter/auto")
                 )
             }
         }.getOrDefault(emptyList())
@@ -76,7 +79,8 @@ internal object WorkspaceStore {
             array.put(JSONObject()
                 .put("id", project.id)
                 .put("name", project.name)
-                .put("description", project.description))
+                .put("description", project.description)
+                .put("model", project.model))
         }
         prefs.edit().putString(PROJECTS_KEY, array.toString()).apply()
     }

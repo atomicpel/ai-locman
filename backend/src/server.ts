@@ -23,7 +23,8 @@ await pool.query(`
     content TEXT NOT NULL DEFAULT '',
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (project_id, section)
-  )
+  );
+  ALTER TABLE projects ADD COLUMN IF NOT EXISTS model TEXT NOT NULL DEFAULT 'openrouter/auto'
 `);
 await pool.query(`
   ALTER TABLE agent_tasks
@@ -61,7 +62,7 @@ app.get("/health", async () => ({ status: "ok", service: "ai-locman-api", versio
 // Development MVP only. Do not expose this unauthenticated API to the public internet.
 app.get("/api/v1/projects", async () => {
   const { rows } = await pool.query(
-    "SELECT id, name, description, created_at FROM projects WHERE owner_id = $1 ORDER BY created_at DESC LIMIT 100",
+    "SELECT id, name, description, model, created_at FROM projects WHERE owner_id = $1 ORDER BY created_at DESC LIMIT 100",
     [DEV_OWNER_ID]
   );
   return { items: rows };
@@ -69,21 +70,48 @@ app.get("/api/v1/projects", async () => {
 
 const createProjectSchema = z.object({
   name: z.string().trim().min(1).max(100),
-  description: z.string().max(2000).default("")
+  description: z.string().max(2000).default(""),
+  model: z.string().trim().min(1).max(200).default(DEFAULT_MODEL)
 });
 
 app.post("/api/v1/projects", async (request, reply) => {
   const parsed = createProjectSchema.safeParse(request.body);
   if (!parsed.success) return reply.badRequest(parsed.error.message);
-  const { name, description } = parsed.data;
+  const { name, description, model } = parsed.data;
   const { rows } = await pool.query(
-    `INSERT INTO projects (owner_id, name, description)
-     VALUES ($1, $2, $3) RETURNING id, name, description, created_at`,
-    [DEV_OWNER_ID, name, description]
+    `INSERT INTO projects (owner_id, name, description, model)
+     VALUES ($1, $2, $3, $4) RETURNING id, name, description, model, created_at`,
+    [DEV_OWNER_ID, name, description, model]
   );
   return reply.code(201).send(rows[0]);
 });
 
+
+const updateProjectSchema = z.object({
+  name: z.string().trim().min(1).max(100).optional(),
+  description: z.string().max(2000).optional(),
+  model: z.string().trim().min(1).max(200).optional(),
+  instructions: z.string().max(10000).optional()
+}).refine((value) => Object.keys(value).length > 0, "Нечего обновлять");
+
+app.patch("/api/v1/projects/:projectId", async (request, reply) => {
+  const parsedParams = projectParam.safeParse(request.params);
+  const parsedBody = updateProjectSchema.safeParse(request.body);
+  if (!parsedParams.success) return reply.badRequest(parsedParams.error.message);
+  if (!parsedBody.success) return reply.badRequest(parsedBody.error.message);
+  const current = await pool.query(
+    "SELECT id, name, description, model, instructions FROM projects WHERE id=$1 AND owner_id=$2",
+    [parsedParams.data.projectId, DEV_OWNER_ID]
+  );
+  if (!current.rowCount) return reply.notFound("Проект не найден");
+  const next = { ...current.rows[0], ...parsedBody.data };
+  const { rows } = await pool.query(
+    `UPDATE projects SET name=$2, description=$3, model=$4, instructions=$5, updated_at=now()
+     WHERE id=$1 RETURNING id, name, description, model, instructions, created_at, updated_at`,
+    [parsedParams.data.projectId, next.name, next.description, next.model ?? DEFAULT_MODEL, next.instructions ?? ""]
+  );
+  return rows[0];
+});
 
 const projectParam = z.object({ projectId: z.string().uuid() });
 const conversationParam = z.object({ conversationId: z.string().uuid() });
@@ -213,20 +241,21 @@ app.get("/api/v1/models", async (_request, reply) => {
 const chatSchema = z.object({
   projectId: z.string().uuid(),
   conversationId: z.string().uuid().optional(),
-  model: z.string().min(1).max(200).default(DEFAULT_MODEL),
+  model: z.string().min(1).max(200).optional(),
   message: z.string().trim().min(1).max(20000)
 });
 
 app.post("/api/v1/chat", async (request, reply) => {
   const parsed = chatSchema.safeParse(request.body);
   if (!parsed.success) return reply.badRequest(parsed.error.message);
-  const { projectId, model, message } = parsed.data;
+  const { projectId, message } = parsed.data;
   const projectResult = await pool.query(
-    "SELECT id, name, instructions FROM projects WHERE id = $1 AND owner_id = $2",
+    "SELECT id, name, instructions, model FROM projects WHERE id = $1 AND owner_id = $2",
     [projectId, DEV_OWNER_ID]
   );
   const project = projectResult.rows[0];
   if (!project) return reply.notFound("Проект не найден");
+  const model = parsed.data.model ?? project.model ?? DEFAULT_MODEL;
   const memoryResult = await pool.query(
     "SELECT section, content FROM project_memory WHERE project_id=$1 AND content <> '' ORDER BY section",
     [projectId]
@@ -295,7 +324,7 @@ app.post("/api/v1/chat", async (request, reply) => {
 
 const taskSchema = z.object({
   prompt: z.string().trim().min(1).max(20000),
-  model: z.string().min(1).max(200).default(DEFAULT_MODEL),
+  model: z.string().min(1).max(200).optional(),
   conversationId: z.string().uuid().optional()
 });
 
@@ -305,7 +334,7 @@ app.post("/api/v1/projects/:projectId/tasks", async (request, reply) => {
   if (!parsedProject.success) return reply.badRequest(parsedProject.error.message);
   if (!parsedBody.success) return reply.badRequest(parsedBody.error.message);
   const owned = await pool.query(
-    "SELECT id FROM projects WHERE id=$1 AND owner_id=$2",
+    "SELECT id, model FROM projects WHERE id=$1 AND owner_id=$2",
     [parsedProject.data.projectId, DEV_OWNER_ID]
   );
   if (!owned.rowCount) return reply.notFound("Проект не найден");
@@ -320,7 +349,7 @@ app.post("/api/v1/projects/:projectId/tasks", async (request, reply) => {
     `INSERT INTO agent_tasks (project_id, conversation_id, prompt, model, status)
      VALUES ($1, $2, $3, $4, 'queued')
      RETURNING id, project_id, conversation_id, prompt, model, status, created_at`,
-    [parsedProject.data.projectId, parsedBody.data.conversationId ?? null, parsedBody.data.prompt, parsedBody.data.model]
+    [parsedProject.data.projectId, parsedBody.data.conversationId ?? null, parsedBody.data.prompt, parsedBody.data.model ?? owned.rows[0].model ?? DEFAULT_MODEL]
   );
   const task = created.rows[0];
   try {

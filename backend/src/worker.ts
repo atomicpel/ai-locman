@@ -22,20 +22,6 @@ const connection = {
   ...(redisUrl.protocol === "rediss:" ? { tls: {} } : {})
 };
 
-await pool.query(`
-  ALTER TABLE agent_tasks
-    ADD COLUMN IF NOT EXISTS conversation_id UUID REFERENCES conversations(id) ON DELETE SET NULL,
-    ADD COLUMN IF NOT EXISTS result TEXT,
-    ADD COLUMN IF NOT EXISTS error TEXT,
-    ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ,
-    ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ,
-    ADD COLUMN IF NOT EXISTS cancel_requested BOOLEAN NOT NULL DEFAULT FALSE;
-  ALTER TABLE messages
-    ADD COLUMN IF NOT EXISTS task_id UUID REFERENCES agent_tasks(id) ON DELETE SET NULL;
-  CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_task_role
-    ON messages(task_id, role) WHERE task_id IS NOT NULL;
-`);
-
 const baseUrl = process.env.OPENROUTER_BASE_URL ?? "https://openrouter.ai/api/v1";
 
 async function executeTask(job: Job<TaskJob>) {

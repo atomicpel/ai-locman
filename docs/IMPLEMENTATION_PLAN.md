@@ -5,13 +5,22 @@
 - [x] OpenRouter-backed project chat endpoint with persisted messages.
 - [x] Project create/list endpoints.
 - [x] Android Compose client can create a project and send/receive chat messages.
-- [ ] Verify Android APK build in CI and run backend integration tests.
+- [x] Android debug APK build verified in GitHub Actions.
+- [x] Backend and Agent Core TypeScript typechecks verified in GitHub Actions.
+- [ ] Backend integration tests and runtime deployment test.
 - [ ] Add real authentication before any remote deployment.
 
 ## Stage 1 — mobile workspace
-- Project list/switch, conversation history, attachments, streaming responses.
-- Model catalog search and per-project model defaults.
-- Connection health, reconnect handling, push notifications.
+- [x] Project list/create/switch in Android (local and Backend modes).
+- [x] Conversation history: create/open/rename/delete and restore after app restart.
+- [x] Project-scoped memory: architecture, decisions and knowledge; injected into model context.
+- [x] OpenRouter model catalog search and per-project model defaults (local and Backend).
+- [x] Streaming token display in Local AI mode.
+- [x] Backend task list/status/cancellation and open-result flow.
+- [ ] File/image attachments and persistence.
+- [ ] Streaming delivery for Backend mode and worker tasks.
+- [ ] Android connection-health screen, automatic reconnect and offline retry queue.
+- [ ] Push notifications for completed/failed background tasks.
 
 ## Stage 2 — GitHub integration
 - GitHub App/OAuth connection with minimum permissions.
@@ -19,10 +28,10 @@
 - Start on feature branches; never push directly to default branch by default.
 
 ## Stage 3 — autonomous agent
-- Durable task queue and task state machine.
-- Planner → implementer → independent reviewer → test/fix loop.
-- Tool registry with schemas, permission policy, approvals and audit trail.
-- Checkpoints and cancellation/resume.
+- [x] Redis/BullMQ durable queue, PostgreSQL task records, status polling and cancellation.
+- [ ] Planner → implementer → independent reviewer → test/fix loop. Current worker performs one OpenRouter completion only; it is not yet an autonomous coding agent.
+- [ ] Tool registry with schemas, permission policy, approvals and audit trail.
+- [ ] Checkpoints and reliable resume after worker restart.
 
 ## Stage 4 — isolated build workers
 - Ephemeral non-root workers with CPU/RAM/disk/time limits.

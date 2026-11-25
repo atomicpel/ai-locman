@@ -11,6 +11,7 @@ services:
       - ../backend/db/001_init.sql:/docker-entrypoint-initdb.d/001_init.sql:ro
       - ../backend/db/002_project_memory.sql:/docker-entrypoint-initdb.d/002_project_memory.sql:ro
       - ../backend/db/003_agent_tasks.sql:/docker-entrypoint-initdb.d/003_agent_tasks.sql:ro
+      - ../backend/db/004_project_model.sql:/docker-entrypoint-initdb.d/004_project_model.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U locman -d ai_locman"]
       interval: 5s

@@ -52,6 +52,9 @@ internal fun ProjectsScreen(
                 ) {
                     Column(Modifier.padding(16.dp)) {
                         Text(project.name, fontWeight = FontWeight.SemiBold)
+                        Text("Модель: ${project.model.substringAfterLast('/')}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
                         if (project.description.isNotBlank()) {
                             Text(project.description, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
