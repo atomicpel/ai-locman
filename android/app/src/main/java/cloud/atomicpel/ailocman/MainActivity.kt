@@ -121,17 +121,17 @@ private fun LocmanApp(
         contentWindowInsets = WindowInsets.safeDrawing,
         topBar = {
             Row(
-                Modifier.fillMaxWidth().background(Navy).padding(horizontal = 20.dp, vertical = 14.dp),
+                Modifier.fillMaxWidth().background(Navy).padding(horizontal = 22.dp, vertical = 12.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Box(
-                    Modifier.size(42.dp).background(Accent.copy(alpha = .14f), CircleShape),
+                    Modifier.size(54.dp).background(Accent.copy(alpha = .14f), CircleShape),
                     contentAlignment = Alignment.Center
                 ) { Text("L", color = Accent, fontWeight = FontWeight.Black, style = MaterialTheme.typography.titleLarge) }
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f)) {
-                    Text("AI LOCMAN", color = MainText, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
-                    Text("ТВОЯ AI-СТУДИЯ", color = Muted, style = MaterialTheme.typography.labelSmall)
+                    Text("AI LOCMAN", color = MainText, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleLarge)
+                    Text("ТВОЯ AI-СТУДИЯ", color = Muted, style = MaterialTheme.typography.labelMedium)
                 }
                 if (showSettings) {
                     TextButton(onClick = { showSettings = false }) { Text("Назад", color = Accent) }
@@ -144,17 +144,18 @@ private fun LocmanApp(
         },
         bottomBar = {
             if (!showSettings) {
-                Column(Modifier.fillMaxWidth().background(Navy).navigationBarsPadding().imePadding().padding(horizontal = 14.dp, vertical = 10.dp)) {
+                Column(Modifier.fillMaxWidth().background(Navy).navigationBarsPadding().imePadding().padding(horizontal = 18.dp, vertical = 12.dp)) {
                     Row(
-                        Modifier.fillMaxWidth().background(Panel, RoundedCornerShape(22.dp)).padding(6.dp),
+                        Modifier.fillMaxWidth().background(Panel, RoundedCornerShape(28.dp)).padding(7.dp),
                         verticalAlignment = Alignment.Bottom
                     ) {
                         OutlinedTextField(
                             value = prompt, onValueChange = { prompt = it },
                             modifier = Modifier.weight(1f),
-                            placeholder = { Text("Напиши задачу Лоцману…", color = Muted) },
+                            placeholder = { Text("Напиши задачу Лоцману…", color = Muted, style = MaterialTheme.typography.bodyLarge) },
                             minLines = 1, maxLines = 4,
-                            shape = RoundedCornerShape(18.dp),
+                            shape = RoundedCornerShape(22.dp),
+                            textStyle = MaterialTheme.typography.bodyLarge,
                             colors = OutlinedTextFieldDefaults.colors(
                                 focusedBorderColor = Color.Transparent, unfocusedBorderColor = Color.Transparent,
                                 focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent
@@ -184,8 +185,10 @@ private fun LocmanApp(
                                 }
                             },
                             enabled = !busy && prompt.isNotBlank() && (if (localMode) apiKey.isNotBlank() else projectId.isNotBlank()),
-                            contentPadding = PaddingValues(horizontal = 17.dp, vertical = 14.dp),
-                            shape = RoundedCornerShape(16.dp)
+                            modifier = Modifier.size(58.dp),
+                            contentPadding = PaddingValues(0.dp),
+                            colors = ButtonDefaults.buttonColors(disabledContainerColor = Panel2, disabledContentColor = Muted),
+                            shape = RoundedCornerShape(20.dp)
                         ) { Text(if (busy) "…" else "➤", style = MaterialTheme.typography.titleMedium) }
                     }
                 }
@@ -228,23 +231,23 @@ private fun LocmanApp(
         } else {
             Column(Modifier.fillMaxSize().padding(padding)) {
                 Row(
-                    Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 6.dp),
+                    Modifier.fillMaxWidth().padding(horizontal = 22.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Surface(color = Panel2, shape = RoundedCornerShape(50)) {
-                        Row(Modifier.padding(horizontal = 12.dp, vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Row(Modifier.padding(horizontal = 14.dp, vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {
                             Box(Modifier.size(7.dp).background(if (localMode) Accent else Blue, CircleShape))
                             Spacer(Modifier.width(7.dp))
                             Text(if (localMode) "LOCAL AI" else "BACKEND", color = MainText, style = MaterialTheme.typography.labelMedium)
                         }
                     }
                     Spacer(Modifier.width(8.dp))
-                    Text(model.substringAfterLast('/'), color = Muted, style = MaterialTheme.typography.labelSmall, maxLines = 1)
+                    Text(model.substringAfterLast('/'), color = Muted, style = MaterialTheme.typography.bodyMedium, maxLines = 1)
                 }
                 HorizontalDivider(color = Color.White.copy(alpha = .07f))
                 LazyColumn(
                     modifier = Modifier.weight(1f).fillMaxWidth(),
-                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 16.dp),
+                    contentPadding = PaddingValues(horizontal = 18.dp, vertical = 20.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     items(lines) { line ->
@@ -257,13 +260,13 @@ private fun LocmanApp(
                                     bottomStart = if (isUser) 18.dp else 5.dp,
                                     bottomEnd = if (isUser) 5.dp else 18.dp
                                 ),
-                                modifier = Modifier.fillMaxWidth(if (isUser) .88f else .94f)
+                                modifier = Modifier.fillMaxWidth(if (isUser) .88f else .92f)
                             ) {
-                                Column(Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
+                                Column(Modifier.padding(horizontal = 18.dp, vertical = 15.dp)) {
                                     Text(if (isUser) "ВЫ" else "ЛОЦМАН", color = if (isUser) Blue else Accent,
                                         style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
                                     Spacer(Modifier.height(5.dp))
-                                    Text(line.text, color = MainText, style = MaterialTheme.typography.bodyMedium)
+                                    Text(line.text, color = MainText, style = MaterialTheme.typography.bodyLarge)
                                 }
                             }
                         }
@@ -275,7 +278,7 @@ private fun LocmanApp(
                 }
                 if (status.isNotBlank()) {
                     Text(status, color = Muted, style = MaterialTheme.typography.labelSmall,
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 5.dp), maxLines = 1)
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 22.dp, vertical = 8.dp), maxLines = 1)
                 }
             }
         }
