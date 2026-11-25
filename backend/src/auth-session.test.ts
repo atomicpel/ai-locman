@@ -2,8 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
-  createAuthSession, resolveAuthSession, revokeAuthSession,
-  verifyAccessPassword, pruneExpiredAuthSessions
+  clearLoginFailures, createAuthSession, getLoginThrottle, recordLoginFailure,
+  resolveAuthSession, revokeAuthSession, verifyAccessPassword, pruneExpiredAuthSessions
 } from "./auth-session.js";
 
 function fakeDb() {
@@ -73,4 +73,29 @@ test("prunes expired and long-revoked sessions", async () => {
   await pruneExpiredAuthSessions(fake.db as never);
   assert.match(fake.calls[0].sql, /expires_at <= now\(\)/);
   assert.match(fake.calls[0].sql, /revoked_at < now\(\) - interval '7 days'/);
+});
+
+test("persists per-IP failed-login counters and applies a bounded lockout", async () => {
+  const calls: Array<{ sql: string; values: unknown[] }> = [];
+  const db = {
+    async query(sql: string, values: unknown[] = []) {
+      calls.push({ sql, values });
+      if (sql.includes("RETURNING failed_attempts")) {
+        return { rows: [{ failed_attempts: 5, locked_until: new Date(Date.now() + 900_000) }], rowCount: 1 };
+      }
+      if (sql.includes("SELECT locked_until")) {
+        return { rows: [{ locked_until: new Date(Date.now() + 900_000) }], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 1 };
+    }
+  };
+  const failed = await recordLoginFailure(db as never, "127.0.0.1");
+  assert.equal(failed.failedAttempts, 5);
+  assert.ok(failed.lockedUntil);
+  assert.match(calls[0].sql, /failed_attempts \+ 1/);
+  assert.match(calls[0].sql, /interval '15 minutes'/);
+  const throttle = await getLoginThrottle(db as never, "127.0.0.1");
+  assert.ok(throttle.lockedUntil);
+  await clearLoginFailures(db as never, "127.0.0.1");
+  assert.match(calls[2].sql, /DELETE FROM auth_login_attempts/);
 });
