@@ -1,7 +1,7 @@
 name: Backend CI
 on:
   push:
-    paths: ["backend/**", "agent-core/**"]
+    paths: ["backend/**", "agent-core/**", ".github/workflows/backend-ci.yml"]
   pull_request:
     paths: ["backend/**", "agent-core/**"]
   workflow_dispatch:
