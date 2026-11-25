@@ -1,6 +1,8 @@
 package cloud.atomicpel.ailocman
 
 import android.os.Bundle
+import android.content.SharedPreferences
+import java.util.UUID
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
@@ -65,6 +67,7 @@ class MainActivity : ComponentActivity() {
                 )
             ) {
                 LocmanApp(
+                    preferences = prefs,
                     initialServer = prefs.getString("server", "http://10.0.2.2:8080") ?: "http://10.0.2.2:8080",
                     initialModel = prefs.getString("model", "openai/gpt-4o-mini") ?: "openai/gpt-4o-mini",
                     initialKey = securePrefs?.getString("openrouter_key", "") ?: "",
@@ -83,6 +86,7 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 private fun LocmanApp(
+    preferences: SharedPreferences,
     initialServer: String,
     initialModel: String,
     initialKey: String,
@@ -91,7 +95,11 @@ private fun LocmanApp(
     onSaveSettings: (String, String, Boolean, String) -> Unit,
     onSaveKey: (String) -> Unit
 ) {
-    var showSettings by remember { mutableStateOf(false) }
+    var screen by remember { mutableStateOf("chat") }
+    var navigationExpanded by remember { mutableStateOf(false) }
+    var editingConversation by remember { mutableStateOf<WorkspaceConversation?>(null) }
+    var renameValue by remember { mutableStateOf("") }
+    var deletingConversation by remember { mutableStateOf<WorkspaceConversation?>(null) }
     var localMode by remember { mutableStateOf(initialLocalMode) }
     var server by remember { mutableStateOf(initialServer) }
     var projectName by remember { mutableStateOf(initialProject) }
@@ -103,8 +111,28 @@ private fun LocmanApp(
     var models by remember { mutableStateOf<List<ModelInfo>>(emptyList()) }
     var modelSearch by remember { mutableStateOf("") }
     var showModelPicker by remember { mutableStateOf(false) }
-    var projectId by remember { mutableStateOf("") }
-    val lines = remember { mutableStateListOf(ChatLine("assistant", "Привет! Я Лоцман. Чем займёмся сегодня?")) }
+    val initialProjects = remember { WorkspaceStore.ensureProjects(preferences) }
+    var projects by remember { mutableStateOf(initialProjects) }
+    var projectId by remember {
+        mutableStateOf(preferences.getString("active_project_id", initialProjects.first().id) ?: initialProjects.first().id)
+    }
+    var conversations by remember { mutableStateOf(WorkspaceStore.loadConversations(preferences, projectId)) }
+    var conversationId by remember {
+        mutableStateOf(
+            (preferences.getString("active_conversation_$projectId", "") ?: "")
+                .ifBlank { conversations.firstOrNull()?.id.orEmpty() }
+        )
+    }
+    var conversationTitle by remember {
+        mutableStateOf(conversations.firstOrNull { it.id == conversationId }?.title ?: "Новый чат")
+    }
+    val lines = remember {
+        mutableStateListOf<ChatLine>().apply {
+            addAll(WorkspaceStore.loadMessages(preferences, projectId, conversationId).map { ChatLine(it.role, it.content) })
+            if (isEmpty()) add(ChatLine("assistant", "Привет! Я Лоцман. Чем займёмся сегодня?"))
+        }
+    }
+    var memory by remember(projectId) { mutableStateOf(WorkspaceStore.loadMemory(preferences, projectId)) }
     val scope = rememberCoroutineScope()
 
     fun runTask(block: suspend () -> Unit) {
@@ -113,6 +141,54 @@ private fun LocmanApp(
             busy = true
             try { block() } catch (e: Exception) { status = e.message ?: "Неизвестная ошибка" }
             finally { busy = false }
+        }
+    }
+
+    LaunchedEffect(localMode) {
+        if (!localMode) {
+            runTask {
+                projects = loadBackendProjects(server)
+                if (projects.isEmpty()) {
+                    projectId = ""
+                    status = "На backend пока нет проектов. Создай первый в разделе «Проекты»."
+                } else {
+                    val selected = projects.firstOrNull { it.id == projectId } ?: projects.first()
+                    projectId = selected.id
+                    projectName = selected.name
+                    preferences.edit().putString("active_project_id", selected.id).putString("project", selected.name).apply()
+                    conversations = loadBackendConversations(server, projectId)
+                    val active = conversations.firstOrNull { it.id == conversationId } ?: conversations.firstOrNull()
+                    conversationId = active?.id.orEmpty()
+                    conversationTitle = active?.title ?: "Новый чат"
+                    lines.clear()
+                    if (active != null) {
+                        val data = api(server, "/api/v1/conversations/${active.id}/messages", "GET").optJSONArray("items") ?: JSONArray()
+                        for (i in 0 until data.length()) data.optJSONObject(i)?.let {
+                            lines.add(ChatLine(it.optString("role"), it.optString("content")))
+                        }
+                    }
+                    if (lines.isEmpty()) lines.add(ChatLine("assistant", "Проект «${selected.name}» открыт. Создай или выбери чат."))
+                    memory = loadBackendMemory(server, projectId)
+                    status = "Backend подключён"
+                }
+            }
+        } else {
+            projects = WorkspaceStore.ensureProjects(preferences)
+            if (projects.none { it.id == projectId }) {
+                projectId = projects.first().id
+                projectName = projects.first().name
+                preferences.edit().putString("active_project_id", projectId).apply()
+            }
+            conversations = WorkspaceStore.loadConversations(preferences, projectId)
+            val active = conversations.firstOrNull { it.id == conversationId } ?: conversations.firstOrNull()
+            conversationId = active?.id.orEmpty()
+            conversationTitle = active?.title ?: "Новый чат"
+            lines.clear()
+            if (active != null) {
+                lines.addAll(WorkspaceStore.loadMessages(preferences, projectId, active.id).map { ChatLine(it.role, it.content) })
+            }
+            if (lines.isEmpty()) lines.add(ChatLine("assistant", "Локальный проект открыт. Чем займёмся?"))
+            memory = WorkspaceStore.loadMemory(preferences, projectId)
         }
     }
 
@@ -131,19 +207,67 @@ private fun LocmanApp(
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f)) {
                     Text("AI LOCMAN", color = MainText, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleLarge)
-                    Text("ТВОЯ AI-СТУДИЯ", color = Muted, style = MaterialTheme.typography.labelMedium)
+                    Text(
+                        when (screen) {
+                            "projects" -> "ПРОЕКТЫ"
+                            "history" -> "ИСТОРИЯ ЧАТОВ"
+                            "memory" -> "ПАМЯТЬ ПРОЕКТА"
+                            "settings" -> "НАСТРОЙКИ"
+                            else -> "ТВОЯ AI-СТУДИЯ"
+                        },
+                        color = Muted, style = MaterialTheme.typography.labelMedium
+                    )
                 }
-                if (showSettings) {
-                    TextButton(onClick = { showSettings = false }) { Text("Назад", color = Accent) }
+                if (screen != "chat") {
+                    TextButton(onClick = { screen = "chat" }) { Text("Назад", color = Accent) }
                 } else {
-                    IconButton(onClick = { showSettings = true }) {
+                    Box {
+                        IconButton(onClick = { navigationExpanded = true }) {
+                            Text("☰", color = MainText, style = MaterialTheme.typography.headlineSmall)
+                        }
+                        DropdownMenu(expanded = navigationExpanded, onDismissRequest = { navigationExpanded = false }) {
+                            DropdownMenuItem(text = { Text("Проекты") }, onClick = {
+                                navigationExpanded = false
+                                runTask {
+                                    projects = if (localMode) WorkspaceStore.ensureProjects(preferences) else loadBackendProjects(server)
+                                    if (projects.isNotEmpty() && projects.none { it.id == projectId }) {
+                                        projectId = projects.first().id
+                                        projectName = projects.first().name
+                                        preferences.edit().putString("active_project_id", projectId).apply()
+                                    }
+                                    screen = "projects"
+                                }
+                            })
+                            DropdownMenuItem(text = { Text("История чатов") }, onClick = {
+                                navigationExpanded = false
+                                runTask {
+                                    conversations = if (localMode) WorkspaceStore.loadConversations(preferences, projectId)
+                                        else loadBackendConversations(server, projectId)
+                                    screen = "history"
+                                }
+                            })
+                            DropdownMenuItem(text = { Text("Память проекта") }, onClick = {
+                                navigationExpanded = false
+                                runTask {
+                                    memory = if (localMode) WorkspaceStore.loadMemory(preferences, projectId) else {
+                                        val data = api(server, "/api/v1/projects/$projectId/memory", "GET").optJSONArray("items") ?: JSONArray()
+                                        fun value(section: String) = (0 until data.length()).mapNotNull { data.optJSONObject(it) }
+                                            .firstOrNull { it.optString("section") == section }?.optString("content").orEmpty()
+                                        WorkspaceMemory(value("architecture"), value("decisions"), value("knowledge"))
+                                    }
+                                    screen = "memory"
+                                }
+                            })
+                        }
+                    }
+                    IconButton(onClick = { screen = "settings" }) {
                         Text("⚙", color = MainText, style = MaterialTheme.typography.headlineSmall)
                     }
                 }
             }
         },
         bottomBar = {
-            if (!showSettings) {
+            if (screen == "chat") {
                 Column(Modifier.fillMaxWidth().background(Navy).navigationBarsPadding().imePadding().padding(horizontal = 18.dp, vertical = 12.dp)) {
                     Row(
                         Modifier.fillMaxWidth().background(Panel, RoundedCornerShape(28.dp)).padding(7.dp),
@@ -167,24 +291,64 @@ private fun LocmanApp(
                                 val text = prompt.trim()
                                 if (text.isNotEmpty()) {
                                     prompt = ""
+                                    if (conversationId.isBlank() && localMode) {
+                                        conversationId = UUID.randomUUID().toString()
+                                        conversationTitle = text.take(70)
+                                        preferences.edit().putString("active_conversation_$projectId", conversationId).apply()
+                                    }
                                     lines.add(ChatLine("user", text))
                                     val history = lines.map { it.role to it.text }
+                                    if (localMode) {
+                                        WorkspaceStore.saveConversation(
+                                            preferences, projectId, conversationId, text.take(70),
+                                            lines.map { WorkspaceMessage(it.role, it.text) }
+                                        )
+                                    }
                                     runTask {
                                         status = "Отправляю запрос…"
+                                        if (!localMode && conversationId.isBlank()) {
+                                            val created = api(server, "/api/v1/projects/$projectId/conversations", "POST",
+                                                JSONObject().put("title", text.take(70)))
+                                            conversationId = created.getString("id")
+                                            conversationTitle = created.optString("title", text.take(70))
+                                            preferences.edit().putString("active_conversation_$projectId", conversationId).apply()
+                                        }
                                         val answer = if (localMode) {
-                                            openRouterChat(apiKey, model, history)
+                                            openRouterChat(
+                                                apiKey, model, history, projects.firstOrNull { it.id == projectId }?.name ?: projectName,
+                                                memory
+                                            )
                                         } else {
-                                            require(projectId.isNotBlank()) { "Сначала создай проект в настройках Backend" }
-                                            api(server, "/api/v1/chat", "POST",
-                                                JSONObject().put("projectId", projectId).put("model", model).put("message", text)
-                                            ).optString("answer", "Пустой ответ")
+                                            require(projectId.isNotBlank()) { "Сначала выбери или создай проект" }
+                                            val result = api(server, "/api/v1/chat", "POST",
+                                                JSONObject().put("projectId", projectId).put("conversationId", conversationId)
+                                                    .put("model", model).put("message", text)
+                                            )
+                                            conversationId = result.optString("conversationId", conversationId)
+                                            preferences.edit().putString("active_conversation_$projectId", conversationId).apply()
+                                            result.optString("answer", "Пустой ответ")
                                         }
                                         lines.add(ChatLine("assistant", answer))
+                                        val isFirstMessage = conversationTitle == "Новый чат"
+                                        conversationTitle = if (isFirstMessage) text.take(70) else conversationTitle
+                                        if (!localMode && isFirstMessage) {
+                                            api(server, "/api/v1/conversations/$conversationId", "PATCH",
+                                                JSONObject().put("title", conversationTitle))
+                                        }
+                                        if (localMode) {
+                                            WorkspaceStore.saveConversation(
+                                                preferences, projectId, conversationId, conversationTitle,
+                                                lines.map { WorkspaceMessage(it.role, it.text) }
+                                            )
+                                            conversations = WorkspaceStore.loadConversations(preferences, projectId)
+                                        } else {
+                                            conversations = loadBackendConversations(server, projectId)
+                                        }
                                         status = "Ответ получен"
                                     }
                                 }
                             },
-                            enabled = !busy && prompt.isNotBlank() && (if (localMode) apiKey.isNotBlank() else projectId.isNotBlank()),
+                            enabled = !busy && prompt.isNotBlank() && projectId.isNotBlank() && (if (localMode) apiKey.isNotBlank() else true),
                             modifier = Modifier.size(58.dp),
                             contentPadding = PaddingValues(0.dp),
                             colors = ButtonDefaults.buttonColors(disabledContainerColor = Panel2, disabledContentColor = Muted),
@@ -195,8 +359,8 @@ private fun LocmanApp(
             }
         }
     ) { padding ->
-        if (showSettings) {
-            SettingsScreen(
+        when (screen) {
+            "settings" -> SettingsScreen(
                 modifier = Modifier.fillMaxSize().padding(padding),
                 localMode = localMode, onLocalMode = { localMode = it },
                 apiKey = apiKey, onApiKey = { apiKey = it },
@@ -225,10 +389,118 @@ private fun LocmanApp(
                     onSaveSettings(server.trim().trimEnd('/'), model, localMode, projectName)
                     onSaveKey(apiKey.trim())
                     status = "Настройки сохранены"
-                    showSettings = false
+                    screen = "chat"
                 }
             )
-        } else {
+            "projects" -> ProjectsScreen(
+                projects = projects, activeProjectId = projectId,
+                onSelect = { selected ->
+                    runTask {
+                        projectId = selected.id
+                        projectName = selected.name
+                        preferences.edit().putString("active_project_id", selected.id).putString("project", selected.name).apply()
+                        conversations = if (localMode) WorkspaceStore.loadConversations(preferences, selected.id)
+                            else loadBackendConversations(server, selected.id)
+                        val chosen = conversations.firstOrNull()
+                        conversationId = chosen?.id.orEmpty()
+                        conversationTitle = chosen?.title ?: "Новый чат"
+                        lines.clear()
+                        if (conversationId.isNotBlank()) {
+                            if (localMode) {
+                                lines.addAll(WorkspaceStore.loadMessages(preferences, projectId, conversationId).map { ChatLine(it.role, it.content) })
+                            } else {
+                                val data = api(server, "/api/v1/conversations/$conversationId/messages", "GET").optJSONArray("items") ?: JSONArray()
+                                for (i in 0 until data.length()) data.optJSONObject(i)?.let { lines.add(ChatLine(it.optString("role"), it.optString("content"))) }
+                            }
+                        }
+                        if (lines.isEmpty()) lines.add(ChatLine("assistant", "Проект «${selected.name}» открыт. Чем займёмся?"))
+                        memory = if (localMode) WorkspaceStore.loadMemory(preferences, projectId) else loadBackendMemory(server, projectId)
+                        screen = "chat"
+                    }
+                },
+                onCreate = { name ->
+                    runTask {
+                        val created = if (localMode) {
+                            val item = WorkspaceProject(UUID.randomUUID().toString(), name)
+                            projects = projects + item
+                            WorkspaceStore.saveProjects(preferences, projects)
+                            item
+                        } else {
+                            val json = api(server, "/api/v1/projects", "POST", JSONObject().put("name", name).put("description", "Проект AI Locman"))
+                            WorkspaceProject(json.getString("id"), json.optString("name", name), json.optString("description"))
+                                .also { projects = loadBackendProjects(server) }
+                        }
+                        projectId = created.id
+                        projectName = created.name
+                        preferences.edit().putString("active_project_id", created.id).putString("project", created.name).apply()
+                        conversations = emptyList()
+                        conversationId = ""
+                        conversationTitle = "Новый чат"
+                        lines.clear()
+                        lines.add(ChatLine("assistant", "Проект «${created.name}» создан. Создай новый чат."))
+                        memory = WorkspaceMemory()
+                        screen = "chat"
+                    }
+                }
+            )
+            "history" -> HistoryScreen(
+                conversations = conversations, activeConversationId = conversationId,
+                onOpen = { item ->
+                    runTask {
+                        conversationId = item.id
+                        conversationTitle = item.title
+                        preferences.edit().putString("active_conversation_$projectId", item.id).apply()
+                        lines.clear()
+                        if (localMode) {
+                            lines.addAll(WorkspaceStore.loadMessages(preferences, projectId, item.id).map { ChatLine(it.role, it.content) })
+                        } else {
+                            val data = api(server, "/api/v1/conversations/${item.id}/messages", "GET").optJSONArray("items") ?: JSONArray()
+                            for (i in 0 until data.length()) data.optJSONObject(i)?.let { lines.add(ChatLine(it.optString("role"), it.optString("content"))) }
+                        }
+                        if (lines.isEmpty()) lines.add(ChatLine("assistant", "Новый диалог. Чем займёмся?"))
+                        screen = "chat"
+                    }
+                },
+                onCreate = {
+                    runTask {
+                        val created = if (localMode) {
+                            WorkspaceConversation(UUID.randomUUID().toString(), "Новый чат")
+                        } else {
+                            val json = api(server, "/api/v1/projects/$projectId/conversations", "POST", JSONObject().put("title", "Новый чат"))
+                            WorkspaceConversation(json.getString("id"), json.optString("title", "Новый чат"))
+                        }
+                        conversationId = created.id
+                        conversationTitle = created.title
+                        preferences.edit().putString("active_conversation_$projectId", created.id).apply()
+                        lines.clear()
+                        if (localMode) WorkspaceStore.saveConversation(preferences, projectId, created.id, created.title, emptyList())
+                        conversations = if (localMode) WorkspaceStore.loadConversations(preferences, projectId) else loadBackendConversations(server, projectId)
+                        screen = "chat"
+                    }
+                },
+                onRename = { item -> editingConversation = item; renameValue = item.title },
+                onDelete = { item -> deletingConversation = item }
+            )
+            "memory" -> MemoryScreen(initial = memory, onSave = { updated ->
+                runTask {
+                    if (localMode) {
+                        WorkspaceStore.saveMemory(preferences, projectId, updated)
+                    } else {
+                        listOf(
+                            "architecture" to updated.architecture,
+                            "decisions" to updated.decisions,
+                            "knowledge" to updated.knowledge
+                        ).forEach { (section, content) ->
+                            api(server, "/api/v1/projects/$projectId/memory", "PUT",
+                                JSONObject().put("section", section).put("content", content))
+                        }
+                    }
+                    memory = updated
+                    status = "Память проекта сохранена"
+                    screen = "chat"
+                }
+            })
+            else -> {
             Column(Modifier.fillMaxSize().padding(padding)) {
                 Row(
                     Modifier.fillMaxWidth().padding(horizontal = 22.dp, vertical = 10.dp),
@@ -281,7 +553,68 @@ private fun LocmanApp(
                         modifier = Modifier.fillMaxWidth().padding(horizontal = 22.dp, vertical = 8.dp), maxLines = 1)
                 }
             }
+            }
         }
+    }
+
+    if (editingConversation != null) {
+        AlertDialog(
+            onDismissRequest = { editingConversation = null },
+            title = { Text("Переименовать чат") },
+            text = {
+                OutlinedTextField(value = renameValue, onValueChange = { renameValue = it }, singleLine = true)
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val item = editingConversation
+                    val title = renameValue.trim()
+                    if (item != null && title.isNotBlank()) {
+                        runTask {
+                            if (localMode) {
+                                WorkspaceStore.renameConversation(preferences, projectId, item.id, title)
+                                conversations = WorkspaceStore.loadConversations(preferences, projectId)
+                            } else {
+                                api(server, "/api/v1/conversations/${item.id}", "PATCH", JSONObject().put("title", title))
+                                conversations = loadBackendConversations(server, projectId)
+                            }
+                            if (conversationId == item.id) conversationTitle = title
+                            editingConversation = null
+                        }
+                    }
+                }) { Text("Сохранить") }
+            },
+            dismissButton = { TextButton(onClick = { editingConversation = null }) { Text("Отмена") } }
+        )
+    }
+    if (deletingConversation != null) {
+        AlertDialog(
+            onDismissRequest = { deletingConversation = null },
+            title = { Text("Удалить переписку?") },
+            text = { Text("Это удалит сообщения выбранного чата.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    val item = deletingConversation
+                    if (item != null) runTask {
+                        if (localMode) {
+                            WorkspaceStore.deleteConversation(preferences, projectId, item.id)
+                            conversations = WorkspaceStore.loadConversations(preferences, projectId)
+                        } else {
+                            api(server, "/api/v1/conversations/${item.id}", "DELETE")
+                            conversations = loadBackendConversations(server, projectId)
+                        }
+                        if (conversationId == item.id) {
+                            conversationId = ""
+                            preferences.edit().remove("active_conversation_$projectId").apply()
+                            conversationTitle = "Новый чат"
+                            lines.clear()
+                            lines.add(ChatLine("assistant", "Чат удалён. Создай новую переписку."))
+                        }
+                        deletingConversation = null
+                    }
+                }) { Text("Удалить") }
+            },
+            dismissButton = { TextButton(onClick = { deletingConversation = null }) { Text("Отмена") } }
+        )
     }
 
     if (showModelPicker) {
@@ -406,6 +739,38 @@ private fun SettingsCard(title: String, content: @Composable ColumnScope.() -> U
     }
 }
 
+
+
+private suspend fun loadBackendProjects(server: String): List<WorkspaceProject> {
+    val data = api(server, "/api/v1/projects", "GET").optJSONArray("items") ?: JSONArray()
+    return (0 until data.length()).mapNotNull { i ->
+        data.optJSONObject(i)?.let { item ->
+            val id = item.optString("id")
+            if (id.isBlank()) null else WorkspaceProject(id, item.optString("name", "Проект"), item.optString("description"))
+        }
+    }
+}
+
+private suspend fun loadBackendConversations(server: String, projectId: String): List<WorkspaceConversation> {
+    if (projectId.isBlank()) return emptyList()
+    val data = api(server, "/api/v1/projects/$projectId/conversations", "GET").optJSONArray("items") ?: JSONArray()
+    return (0 until data.length()).mapNotNull { i ->
+        data.optJSONObject(i)?.let { item ->
+            val id = item.optString("id")
+            if (id.isBlank()) null else WorkspaceConversation(
+                id, item.optString("title", "Новый чат"), item.optString("last_message")
+            )
+        }
+    }
+}
+
+private suspend fun loadBackendMemory(server: String, projectId: String): WorkspaceMemory {
+    val data = api(server, "/api/v1/projects/$projectId/memory", "GET").optJSONArray("items") ?: JSONArray()
+    fun value(section: String): String = (0 until data.length()).mapNotNull { data.optJSONObject(it) }
+        .firstOrNull { it.optString("section") == section }?.optString("content").orEmpty()
+    return WorkspaceMemory(value("architecture"), value("decisions"), value("knowledge"))
+}
+
 private suspend fun fetchOpenRouterModels(key: String): List<ModelInfo> = withContext(Dispatchers.IO) {
     val connection = (URL("https://openrouter.ai/api/v1/models").openConnection() as HttpURLConnection).apply {
         requestMethod = "GET"
@@ -435,10 +800,20 @@ private suspend fun fetchOpenRouterModels(key: String): List<ModelInfo> = withCo
     } finally { connection.disconnect() }
 }
 
-private suspend fun openRouterChat(key: String, model: String, history: List<Pair<String, String>>): String = withContext(Dispatchers.IO) {
+private suspend fun openRouterChat(
+    key: String, model: String, history: List<Pair<String, String>>,
+    projectName: String, memory: WorkspaceMemory
+): String = withContext(Dispatchers.IO) {
     require(key.isNotBlank()) { "Добавь ключ OpenRouter в настройках" }
     require(model.isNotBlank()) { "Выбери модель в настройках" }
     val messages = JSONArray()
+    val memoryContext = "Архитектура проекта:\n" + memory.architecture.ifBlank { "не указана" } +
+        "\n\nПринятые решения:\n" + memory.decisions.ifBlank { "не указаны" } +
+        "\n\nЗнания проекта:\n" + memory.knowledge.ifBlank { "не указаны" }
+    messages.put(JSONObject().put("role", "system").put(
+        "content",
+        "Ты — AI Locman, русскоязычный помощник по разработке. Текущий проект: $projectName. Используй только его память и не смешивай данные проектов.\n\n$memoryContext"
+    ))
     history.forEach { (role, content) -> messages.put(JSONObject().put("role", role).put("content", content)) }
     val body = JSONObject().put("model", model).put("messages", messages)
     val connection = (URL("https://openrouter.ai/api/v1/chat/completions").openConnection() as HttpURLConnection).apply {
@@ -482,6 +857,7 @@ private suspend fun api(base: String, path: String, method: String, body: JSONOb
         if (body != null) connection.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
         val code = connection.responseCode
         val stream = if (code in 200..299) connection.inputStream else connection.errorStream
+        if (code == 204) return@withContext JSONObject()
         val raw = stream?.bufferedReader()?.use { it.readText() } ?: "{}"
         val json = JSONObject(raw)
         if (code !in 200..299) throw IllegalStateException(json.optString("error", "HTTP $code"))
