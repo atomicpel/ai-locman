@@ -28,6 +28,17 @@ internal data class WorkspaceMemory(
     val knowledge: String = ""
 )
 
+
+internal data class WorkspaceTask(
+    val id: String,
+    val prompt: String,
+    val model: String,
+    val status: String,
+    val result: String = "",
+    val error: String = "",
+    val conversationId: String = ""
+)
+
 internal object WorkspaceStore {
     private const val PROJECTS_KEY = "workspace_projects"
 

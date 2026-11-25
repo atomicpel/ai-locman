@@ -165,3 +165,87 @@ internal fun MemoryScreen(
         ) { Text("Сохранить память", fontWeight = FontWeight.Bold) }
     }
 }
+
+
+@Composable
+internal fun TasksScreen(
+    tasks: List<WorkspaceTask>,
+    backendAvailable: Boolean,
+    busy: Boolean,
+    onRefresh: () -> Unit,
+    onCancel: (WorkspaceTask) -> Unit,
+    onOpenResult: (WorkspaceTask) -> Unit
+) {
+    Column(Modifier.fillMaxSize().padding(horizontal = 18.dp, vertical = 14.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Фоновые задачи", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+                Text(
+                    "Задачи продолжаются на сервере, даже когда приложение закрыто",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            TextButton(onClick = onRefresh, enabled = !busy) { Text("Обновить") }
+        }
+        Spacer(Modifier.height(12.dp))
+        if (!backendAvailable) {
+            Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+                Column(Modifier.padding(16.dp)) {
+                    Text("Нужен Backend", fontWeight = FontWeight.SemiBold)
+                    Text(
+                        "Фоновые задачи доступны в режиме Backend. В Local AI запросы выполняются непосредственно с телефона.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        } else if (tasks.isEmpty()) {
+            Text("Пока нет фоновых задач.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        } else {
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                items(tasks, key = { it.id }) { task ->
+                    val terminal = task.status in listOf("completed", "failed", "cancelled")
+                    val statusText = when (task.status) {
+                        "queued" -> "В очереди"
+                        "planning" -> "Подготовка"
+                        "running" -> "Выполняется"
+                        "waiting_approval" -> "Ожидает подтверждения"
+                        "testing" -> "Проверка"
+                        "completed" -> "Завершена"
+                        "failed" -> "Ошибка"
+                        "cancelled" -> "Отменена"
+                        else -> task.status
+                    }
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                        shape = RoundedCornerShape(16.dp)
+                    ) {
+                        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(statusText, modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
+                                Text(task.model.substringAfterLast('/'), style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+                            }
+                            Text(task.prompt, maxLines = 3)
+                            if (task.result.isNotBlank()) {
+                                HorizontalDivider()
+                                Text(task.result, maxLines = 5, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            if (task.error.isNotBlank()) {
+                                Text(task.error, color = MaterialTheme.colorScheme.error, maxLines = 4)
+                            }
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                if (task.status == "completed" && task.conversationId.isNotBlank()) {
+                                    TextButton(onClick = { onOpenResult(task) }) { Text("Открыть диалог") }
+                                }
+                                if (!terminal) {
+                                    TextButton(onClick = { onCancel(task) }) { Text("Отменить") }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

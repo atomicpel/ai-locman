@@ -28,6 +28,7 @@ import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -111,6 +112,8 @@ private fun LocmanApp(
     var models by remember { mutableStateOf<List<ModelInfo>>(emptyList()) }
     var modelSearch by remember { mutableStateOf("") }
     var showModelPicker by remember { mutableStateOf(false) }
+    var tasks by remember { mutableStateOf<List<WorkspaceTask>>(emptyList()) }
+    val monitoredTaskIds = remember { mutableStateListOf<String>() }
     val initialProjects = remember { WorkspaceStore.ensureProjects(preferences) }
     var projects by remember { mutableStateOf(initialProjects) }
     var projectId by remember {
@@ -144,6 +147,46 @@ private fun LocmanApp(
         }
     }
 
+    fun monitorBackendTask(taskId: String) {
+        if (localMode || taskId in monitoredTaskIds) return
+        val taskProjectId = projectId
+        monitoredTaskIds.add(taskId)
+        scope.launch {
+            try {
+                while (true) {
+                    val current = loadBackendTask(server, taskId)
+                    if (projectId == taskProjectId) {
+                        tasks = (tasks.filterNot { it.id == current.id } + current)
+                    }
+                    if (current.status in listOf("completed", "failed", "cancelled")) {
+                        if (projectId == taskProjectId) {
+                            status = when (current.status) {
+                                "completed" -> "Фоновая задача завершена"
+                                "failed" -> "Фоновая задача завершилась с ошибкой"
+                                else -> "Фоновая задача отменена"
+                            }
+                        }
+                        break
+                    }
+                    delay(2000)
+                }
+            } catch (error: Exception) {
+                if (projectId == taskProjectId) status = error.message ?: "Не удалось обновить статус задачи"
+            } finally {
+                monitoredTaskIds.remove(taskId)
+            }
+        }
+    }
+
+    fun refreshTasks() {
+        runTask {
+            tasks = if (localMode) emptyList() else loadBackendTasks(server, projectId)
+            tasks.filter { it.status !in listOf("completed", "failed", "cancelled") }
+                .forEach { monitorBackendTask(it.id) }
+            status = if (localMode) "Переключись на Backend для фоновых задач" else "Список задач обновлён"
+        }
+    }
+
     LaunchedEffect(localMode) {
         if (!localMode) {
             runTask {
@@ -157,6 +200,9 @@ private fun LocmanApp(
                     projectName = selected.name
                     preferences.edit().putString("active_project_id", selected.id).putString("project", selected.name).apply()
                     conversations = loadBackendConversations(server, projectId)
+                    tasks = loadBackendTasks(server, projectId)
+                    tasks.filter { it.status !in listOf("completed", "failed", "cancelled") }
+                        .forEach { monitorBackendTask(it.id) }
                     val active = conversations.firstOrNull { it.id == conversationId } ?: conversations.firstOrNull()
                     conversationId = active?.id.orEmpty()
                     conversationTitle = active?.title ?: "Новый чат"
@@ -212,6 +258,7 @@ private fun LocmanApp(
                             "projects" -> "ПРОЕКТЫ"
                             "history" -> "ИСТОРИЯ ЧАТОВ"
                             "memory" -> "ПАМЯТЬ ПРОЕКТА"
+                            "tasks" -> "ФОНОВЫЕ ЗАДАЧИ"
                             "settings" -> "НАСТРОЙКИ"
                             else -> "ТВОЯ AI-СТУДИЯ"
                         },
@@ -249,13 +296,18 @@ private fun LocmanApp(
                             DropdownMenuItem(text = { Text("Память проекта") }, onClick = {
                                 navigationExpanded = false
                                 runTask {
-                                    memory = if (localMode) WorkspaceStore.loadMemory(preferences, projectId) else {
-                                        val data = api(server, "/api/v1/projects/$projectId/memory", "GET").optJSONArray("items") ?: JSONArray()
-                                        fun value(section: String) = (0 until data.length()).mapNotNull { data.optJSONObject(it) }
-                                            .firstOrNull { it.optString("section") == section }?.optString("content").orEmpty()
-                                        WorkspaceMemory(value("architecture"), value("decisions"), value("knowledge"))
-                                    }
+                                    memory = if (localMode) WorkspaceStore.loadMemory(preferences, projectId)
+                                        else loadBackendMemory(server, projectId)
                                     screen = "memory"
+                                }
+                            })
+                            DropdownMenuItem(text = { Text("Фоновые задачи") }, onClick = {
+                                navigationExpanded = false
+                                runTask {
+                                    tasks = if (localMode) emptyList() else loadBackendTasks(server, projectId)
+                                    tasks.filter { it.status !in listOf("completed", "failed", "cancelled") }
+                                        .forEach { monitorBackendTask(it.id) }
+                                    screen = "tasks"
                                 }
                             })
                         }
@@ -320,13 +372,14 @@ private fun LocmanApp(
                                             )
                                         } else {
                                             require(projectId.isNotBlank()) { "Сначала выбери или создай проект" }
-                                            val result = api(server, "/api/v1/chat", "POST",
-                                                JSONObject().put("projectId", projectId).put("conversationId", conversationId)
-                                                    .put("model", model).put("message", text)
+                                            val queued = api(server, "/api/v1/projects/$projectId/tasks", "POST",
+                                                JSONObject().put("conversationId", conversationId).put("model", model).put("prompt", text)
                                             )
-                                            conversationId = result.optString("conversationId", conversationId)
-                                            preferences.edit().putString("active_conversation_$projectId", conversationId).apply()
-                                            result.optString("answer", "Пустой ответ")
+                                            val task = workspaceTaskFromJson(queued)
+                                            tasks = (tasks.filterNot { it.id == task.id } + task)
+                                            monitorBackendTask(task.id)
+                                            status = "Задача добавлена в очередь. Она продолжится на сервере."
+                                            return@runTask
                                         }
                                         lines.add(ChatLine("assistant", answer))
                                         val isFirstMessage = conversationTitle == "Новый чат"
@@ -401,6 +454,9 @@ private fun LocmanApp(
                         preferences.edit().putString("active_project_id", selected.id).putString("project", selected.name).apply()
                         conversations = if (localMode) WorkspaceStore.loadConversations(preferences, selected.id)
                             else loadBackendConversations(server, selected.id)
+                        tasks = if (localMode) emptyList() else loadBackendTasks(server, selected.id)
+                        tasks.filter { it.status !in listOf("completed", "failed", "cancelled") }
+                            .forEach { monitorBackendTask(it.id) }
                         val chosen = conversations.firstOrNull()
                         conversationId = chosen?.id.orEmpty()
                         conversationTitle = chosen?.title ?: "Новый чат"
@@ -500,6 +556,35 @@ private fun LocmanApp(
                     screen = "chat"
                 }
             })
+            "tasks" -> TasksScreen(
+                tasks = tasks,
+                backendAvailable = !localMode,
+                busy = busy,
+                onRefresh = { refreshTasks() },
+                onCancel = { task ->
+                    runTask {
+                        api(server, "/api/v1/tasks/${task.id}/cancel", "POST")
+                        tasks = loadBackendTasks(server, projectId)
+                        status = "Отмена задачи запрошена"
+                    }
+                },
+                onOpenResult = { task ->
+                    runTask {
+                        val id = task.conversationId
+                        require(id.isNotBlank()) { "У задачи ещё нет связанного диалога" }
+                        conversationId = id
+                        conversationTitle = conversations.firstOrNull { it.id == id }?.title ?: task.prompt.take(70)
+                        preferences.edit().putString("active_conversation_$projectId", id).apply()
+                        val data = api(server, "/api/v1/conversations/$id/messages", "GET").optJSONArray("items") ?: JSONArray()
+                        lines.clear()
+                        for (i in 0 until data.length()) data.optJSONObject(i)?.let {
+                            lines.add(ChatLine(it.optString("role"), it.optString("content")))
+                        }
+                        if (lines.isEmpty() && task.result.isNotBlank()) lines.add(ChatLine("assistant", task.result))
+                        screen = "chat"
+                    }
+                }
+            )
             else -> {
             Column(Modifier.fillMaxSize().padding(padding)) {
                 Row(
@@ -740,6 +825,30 @@ private fun SettingsCard(title: String, content: @Composable ColumnScope.() -> U
 }
 
 
+
+
+private fun workspaceTaskFromJson(json: JSONObject): WorkspaceTask = WorkspaceTask(
+    id = json.optString("id"),
+    prompt = json.optString("prompt"),
+    model = json.optString("model"),
+    status = json.optString("status", "queued"),
+    result = json.optString("result"),
+    error = json.optString("error"),
+    conversationId = json.optString("conversation_id")
+)
+
+private suspend fun loadBackendTasks(server: String, projectId: String): List<WorkspaceTask> {
+    if (projectId.isBlank()) return emptyList()
+    val data = api(server, "/api/v1/projects/$projectId/tasks", "GET").optJSONArray("items") ?: JSONArray()
+    return (0 until data.length()).mapNotNull { i ->
+        data.optJSONObject(i)?.let { item ->
+            workspaceTaskFromJson(item).takeIf { it.id.isNotBlank() }
+        }
+    }
+}
+
+private suspend fun loadBackendTask(server: String, taskId: String): WorkspaceTask =
+    workspaceTaskFromJson(api(server, "/api/v1/tasks/$taskId", "GET"))
 
 private suspend fun loadBackendProjects(server: String): List<WorkspaceProject> {
     val data = api(server, "/api/v1/projects", "GET").optJSONArray("items") ?: JSONArray()
