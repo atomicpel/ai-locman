@@ -8,7 +8,7 @@ const version = "2026-03-10";
 const safePath = z.string().min(1).max(1000).refine((value) => {
   if (
     value.startsWith("/") ||
-    value.includes("\\\\") ||
+    value.includes(String.fromCharCode(92)) ||
     value.includes(String.fromCharCode(0)) ||
     /^[A-Za-z]:/.test(value)
   ) return false;
