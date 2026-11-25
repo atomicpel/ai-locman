@@ -5,7 +5,7 @@ services:
       POSTGRES_USER: locman
       POSTGRES_PASSWORD: locman_dev
       POSTGRES_DB: ai_locman
-    ports: ["5432:5432"]
+    ports: ["127.0.0.1:5432:5432"]
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ../backend/db/001_init.sql:/docker-entrypoint-initdb.d/001_init.sql:ro
@@ -23,7 +23,7 @@ services:
       retries: 10
   redis:
     image: redis:7-alpine
-    ports: ["6379:6379"]
+    ports: ["127.0.0.1:6379:6379"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -40,7 +40,7 @@ services:
       NODE_ENV: development
       DATABASE_URL: postgres://locman:locman_dev@postgres:5432/ai_locman
       REDIS_URL: redis://redis:6379
-    ports: ["8080:8080"]
+    ports: ["127.0.0.1:8080:8080"]
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
