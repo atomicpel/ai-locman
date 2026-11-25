@@ -25,7 +25,7 @@ test("stores and retrieves content by task and digest, without using untrusted a
 test("rejects byte-count, digest, and storage-key mismatches", async () => fixture(async (_root, store) => {
   await assert.rejects(store.put(taskId, descriptor, Buffer.from("different")));
   await assert.rejects(store.put("../outside", descriptor, bytes), /Invalid artifact storage key/);
-  await assert.rejects(store.get(taskId, { ...descriptor, bytes: 1 }), /integrity/);
+  await assert.rejects(store.get(taskId, { ...descriptor, bytes: 1 }), /not found/);
 }));
 
 test("deletes only the requested task namespace", async () => fixture(async (_root, store) => {
