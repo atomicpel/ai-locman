@@ -58,9 +58,9 @@ test("stores manifest metadata transactionally and rechecks owner on download", 
     release: () => undefined
   };
   const pool = {
-    query: async (sql: string) => {
+    query: async (sql: string, values?: unknown[]) => {
       if (sql.includes("SELECT t.id FROM agent_tasks")) return { rows: [{ id: "11111111-1111-4111-8111-111111111111" }], rowCount: 1 };
-      if (sql.includes("SELECT a.id")) return { rows: [], rowCount: 0 };
+      if (sql.includes("SELECT a.id")) return values?.[2] === "owner-1" ? { rows: [row], rowCount: 1 } : { rows: [], rowCount: 0 };
       throw new Error("Unexpected pool query: " + sql);
     },
     connect: async () => client
