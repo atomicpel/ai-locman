@@ -15,6 +15,7 @@ services:
       - ../backend/db/005_github_installations.sql:/docker-entrypoint-initdb.d/005_github_installations.sql:ro
       - ../backend/db/006_project_github_repository.sql:/docker-entrypoint-initdb.d/006_project_github_repository.sql:ro
       - ../backend/db/007_agent_events.sql:/docker-entrypoint-initdb.d/007_agent_events.sql:ro
+      - ../backend/db/008_execution_approvals.sql:/docker-entrypoint-initdb.d/008_execution_approvals.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U locman -d ai_locman"]
       interval: 5s
