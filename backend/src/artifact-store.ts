@@ -2,6 +2,9 @@ import { createHash } from "node:crypto";
 import { mkdir, open, readFile, rename, rm, lstat } from "node:fs/promises";
 import path from "node:path";
 import type { ArtifactDescriptor } from "./artifact-policy.js";
+import { isSafeArtifactPath } from "./execution-policy.js";
+
+const MAX_ARTIFACT_BYTES = 100 * 1024 * 1024;
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const digest = /^[a-f0-9]{64}$/i;
@@ -38,6 +41,7 @@ export class LocalArtifactStore {
   }
 
   async put(taskId: string, descriptor: ArtifactDescriptor, data: Buffer): Promise<void> {
+    if (!isSafeArtifactPath(descriptor.path) || !digest.test(descriptor.sha256) || !Number.isSafeInteger(descriptor.bytes) || descriptor.bytes < 0 || descriptor.bytes > MAX_ARTIFACT_BYTES) throw new Error("Invalid artifact descriptor");
     if (!Buffer.isBuffer(data)) throw new Error("Artifact content must be a Buffer");
     if (data.byteLength !== descriptor.bytes) throw new Error("Artifact byte count mismatch");
     if (hash(data) !== descriptor.sha256.toLowerCase()) throw new Error("Artifact SHA-256 mismatch");
@@ -45,6 +49,8 @@ export class LocalArtifactStore {
     await this.ensureRoot();
     const directory = path.dirname(target);
     await mkdir(directory, { recursive: true, mode: 0o700 });
+    const directoryInfo = await lstat(directory);
+    if (!directoryInfo.isDirectory() || directoryInfo.isSymbolicLink()) throw new Error("Artifact task directory must not be a symlink");
     const temp = path.join(directory, "." + descriptor.sha256 + "." + createHash("sha256").update(String(process.pid) + String(Date.now())).digest("hex").slice(0, 16) + ".tmp");
     let handle: Awaited<ReturnType<typeof open>> | undefined;
     try {
@@ -68,6 +74,8 @@ export class LocalArtifactStore {
 
   async get(taskId: string, descriptor: Pick<ArtifactDescriptor, "bytes" | "sha256">): Promise<Buffer> {
     const target = this.location(taskId, descriptor.sha256);
+    const directoryInfo = await lstat(path.dirname(target));
+    if (!directoryInfo.isDirectory() || directoryInfo.isSymbolicLink()) throw new Error("Artifact task directory must not be a symlink");
     const info = await lstat(target);
     if (!info.isFile() || info.isSymbolicLink()) throw new Error("Stored artifact is not a regular file");
     const data = await readFile(target);
