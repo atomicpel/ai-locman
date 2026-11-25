@@ -35,8 +35,11 @@ const artifactRepository = new ArtifactRepository(
 );
 const SINGLE_OWNER_ID = process.env.LOCMAN_OWNER_ID ?? "local-dev-user";
 const ACCESS_PASSWORD = process.env.LOCMAN_ACCESS_PASSWORD ?? "";
-if (ACCESS_PASSWORD.length < 12) {
-  throw new Error("LOCMAN_ACCESS_PASSWORD must be configured with at least 12 characters; refusing to start an unauthenticated API");
+if (ACCESS_PASSWORD.trim().length < 12) {
+  throw new Error("LOCMAN_ACCESS_PASSWORD must be configured with at least 12 non-whitespace characters; refusing to start an unauthenticated API");
+}
+if (!SINGLE_OWNER_ID.trim() || SINGLE_OWNER_ID.length > 200) {
+  throw new Error("LOCMAN_OWNER_ID must be a non-empty value of at most 200 characters");
 }
 type RequestSession = { ownerId: string; token: string; expiresAt: string };
 const requestSessions = new WeakMap<object, RequestSession>();
