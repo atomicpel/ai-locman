@@ -13,8 +13,8 @@ import { ensureArtifactSchema } from "./artifact-schema.js";
 import { ArtifactRepository } from "./artifact-repository.js";
 import { LocalArtifactStore } from "./artifact-store.js";
 import {
-  createAuthSession, ensureAuthSessionSchema, pruneExpiredAuthSessions,
-  resolveAuthSession, revokeAuthSession, verifyAccessPassword
+  clearLoginFailures, createAuthSession, ensureAuthSessionSchema, getLoginThrottle,
+  pruneExpiredAuthSessions, recordLoginFailure, resolveAuthSession, revokeAuthSession, verifyAccessPassword
 } from "./auth-session.js";
 
 assertDevelopmentOnlyRuntime(process.env.NODE_ENV);
@@ -129,10 +129,24 @@ app.addHook("preHandler", async (request, reply) => {
 
 const loginSchema = z.object({ password: z.string().min(1).max(4096) });
 app.post("/api/v1/auth/login", async (request, reply) => {
+  const ipAddress = request.ip;
+  const throttle = await getLoginThrottle(pool, ipAddress);
+  if (throttle.lockedUntil && Date.parse(throttle.lockedUntil) > Date.now()) {
+    const retryAfter = Math.max(1, Math.ceil((Date.parse(throttle.lockedUntil) - Date.now()) / 1000));
+    reply.header("Retry-After", String(retryAfter));
+    return reply.code(429).send({ error: "Слишком много неудачных попыток. Попробуй позже.", retryAfterSeconds: retryAfter });
+  }
   const parsed = loginSchema.safeParse(request.body);
   if (!parsed.success || !verifyAccessPassword(parsed.success ? parsed.data.password : "", ACCESS_PASSWORD)) {
+    const failure = await recordLoginFailure(pool, ipAddress);
+    if (failure.lockedUntil && Date.parse(failure.lockedUntil) > Date.now()) {
+      const retryAfter = Math.max(1, Math.ceil((Date.parse(failure.lockedUntil) - Date.now()) / 1000));
+      reply.header("Retry-After", String(retryAfter));
+      return reply.code(429).send({ error: "Слишком много неудачных попыток. Попробуй позже.", retryAfterSeconds: retryAfter });
+    }
     return reply.code(401).send({ error: "Неверный пароль" });
   }
+  await clearLoginFailures(pool, ipAddress);
   const session = await createAuthSession(pool, SINGLE_OWNER_ID, 30);
   return reply.code(201).send({ token: session.token, tokenType: "Bearer", expiresAt: session.expiresAt });
 });
