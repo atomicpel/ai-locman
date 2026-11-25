@@ -19,6 +19,13 @@ export async function ensureAuthSessionSchema(db: AuthDb): Promise<void> {
       ON auth_sessions(owner_id, expires_at);
     CREATE INDEX IF NOT EXISTS idx_auth_sessions_expiry
       ON auth_sessions(expires_at) WHERE revoked_at IS NULL;
+    CREATE TABLE IF NOT EXISTS auth_login_attempts (
+      ip_address INET PRIMARY KEY,
+      failed_attempts INTEGER NOT NULL DEFAULT 0 CHECK (failed_attempts >= 0),
+      window_started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      locked_until TIMESTAMPTZ,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
   `);
 }
 
@@ -79,4 +86,48 @@ export async function pruneExpiredAuthSessions(db: AuthDb): Promise<number> {
     "DELETE FROM auth_sessions WHERE expires_at <= now() OR revoked_at < now() - interval '7 days'"
   );
   return result.rowCount ?? 0;
+}
+
+export async function getLoginThrottle(db: AuthDb, ipAddress: string): Promise<{ lockedUntil: string | null }> {
+  const result = await db.query(
+    "SELECT locked_until FROM auth_login_attempts WHERE ip_address = $1",
+    [ipAddress]
+  );
+  const row = result.rows[0] as { locked_until: Date | string | null } | undefined;
+  return { lockedUntil: row?.locked_until ? new Date(row.locked_until).toISOString() : null };
+}
+
+export async function recordLoginFailure(db: AuthDb, ipAddress: string): Promise<{ failedAttempts: number; lockedUntil: string | null }> {
+  const result = await db.query(
+    `INSERT INTO auth_login_attempts (ip_address, failed_attempts, window_started_at, locked_until)
+     VALUES ($1, 1, now(), NULL)
+     ON CONFLICT (ip_address) DO UPDATE SET
+       failed_attempts = CASE
+         WHEN auth_login_attempts.window_started_at < now() - interval '15 minutes' THEN 1
+         ELSE auth_login_attempts.failed_attempts + 1
+       END,
+       window_started_at = CASE
+         WHEN auth_login_attempts.window_started_at < now() - interval '15 minutes' THEN now()
+         ELSE auth_login_attempts.window_started_at
+       END,
+       locked_until = CASE
+         WHEN (CASE
+           WHEN auth_login_attempts.window_started_at < now() - interval '15 minutes' THEN 1
+           ELSE auth_login_attempts.failed_attempts + 1
+         END) >= 5 THEN now() + interval '15 minutes'
+         ELSE auth_login_attempts.locked_until
+       END,
+       updated_at = now()
+     RETURNING failed_attempts, locked_until`,
+    [ipAddress]
+  );
+  const row = result.rows[0] as { failed_attempts: number; locked_until: Date | string | null };
+  return {
+    failedAttempts: row.failed_attempts,
+    lockedUntil: row.locked_until ? new Date(row.locked_until).toISOString() : null
+  };
+}
+
+export async function clearLoginFailures(db: AuthDb, ipAddress: string): Promise<void> {
+  await db.query("DELETE FROM auth_login_attempts WHERE ip_address = $1", [ipAddress]);
 }
