@@ -2,13 +2,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { assertDevelopmentOnlyRuntime } from "./runtime-safety.js";
 
-test("allows only explicitly declared local development and test environments", () => {
+test("allows only explicitly declared local development", () => {
   assert.doesNotThrow(() => assertDevelopmentOnlyRuntime("development"));
-  assert.doesNotThrow(() => assertDevelopmentOnlyRuntime("test"));
 });
 
-test("refuses production and an unset environment", () => {
-  for (const value of ["production", "staging", ""]) {
+test("refuses production, test, staging, and an unset environment", () => {
+  for (const value of ["production", "test", "staging", ""]) {
     assert.throws(
       () => assertDevelopmentOnlyRuntime(value),
       /development-only/
