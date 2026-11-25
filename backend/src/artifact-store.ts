@@ -74,9 +74,19 @@ export class LocalArtifactStore {
 
   async get(taskId: string, descriptor: Pick<ArtifactDescriptor, "bytes" | "sha256">): Promise<Buffer> {
     const target = this.location(taskId, descriptor.sha256);
-    const directoryInfo = await lstat(path.dirname(target));
+    let directoryInfo;
+    try { directoryInfo = await lstat(path.dirname(target)); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new Error("Stored artifact not found");
+      throw error;
+    }
     if (!directoryInfo.isDirectory() || directoryInfo.isSymbolicLink()) throw new Error("Artifact task directory must not be a symlink");
-    const info = await lstat(target);
+    let info;
+    try { info = await lstat(target); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new Error("Stored artifact not found");
+      throw error;
+    }
     if (!info.isFile() || info.isSymbolicLink()) throw new Error("Stored artifact is not a regular file");
     const data = await readFile(target);
     if (data.byteLength !== descriptor.bytes || hash(data) !== descriptor.sha256.toLowerCase()) {
