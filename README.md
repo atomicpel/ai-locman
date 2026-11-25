@@ -29,13 +29,13 @@
 
 ## Безопасность и локальный запуск
 
-Текущий MVP использует один пароль доступа (`LOCMAN_ACCESS_PASSWORD`) и фиксированный owner ID (`LOCMAN_OWNER_ID`). Это защищает API от анонимного доступа, но не является multi-user авторизацией и не подходит для публичного production-размещения. Пароль должен быть уникальным и не короче 12 символов; backend отказывается запускаться без него. Android хранит bearer-сессию в Android Keystore-backed EncryptedSharedPreferences. Сессии имеют срок 30 дней и могут быть отозваны при выходе.
+Текущий MVP использует один пароль доступа (`LOCMAN_ACCESS_PASSWORD`) и фиксированный owner ID (`LOCMAN_OWNER_ID`). Это защищает API от анонимного доступа, но не является multi-user авторизацией и не подходит для публичного production-размещения. Пароль должен быть уникальным и не короче 12 символов; backend отказывается запускаться без него. Android хранит bearer-сессию в Android Keystore-backed EncryptedSharedPreferences. Сессии имеют срок 30 дней и могут быть отозваны при выходе. Пять неверных попыток с одного IP блокируют вход на 15 минут.
 
 Backend и worker запускаются только при явно заданном `NODE_ENV=development` или `NODE_ENV=test`; production и unset environment завершаются с ошибкой. Docker Compose задаёт development mode и публикует порты только на loopback (`127.0.0.1`). Не меняйте эту привязку на публичный интерфейс.
 
 Перед удалённым развёртыванием обязательны TLS, полноценная multi-user идентификация, разграничение доступа, защита от перебора пароля и безопасное хранение секретов. Не подключайте Docker socket к API или обычному agent-worker. Команды остаются заблокированными до развёртывания и проверки отдельного изолированного runtime.
 
-Подробности: `build-workers/EXECUTION_CONTRACT.md`, `docs/ARCHITECTURE.md`, `docs/IMPLEMENTATION_PLAN.md` и `docs/SECURITY_MODEL.md`.
+Подробности: `docs/AUTHENTICATION.md`, `build-workers/EXECUTION_CONTRACT.md`, `docs/ARCHITECTURE.md`, `docs/IMPLEMENTATION_PLAN.md` и `docs/SECURITY_MODEL.md`.
 
 ## GitHub App setup
 
