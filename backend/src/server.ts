@@ -12,6 +12,10 @@ import { ensureExecutionApprovalSchema } from "./approval-schema.js";
 import { ensureArtifactSchema } from "./artifact-schema.js";
 import { ArtifactRepository } from "./artifact-repository.js";
 import { LocalArtifactStore } from "./artifact-store.js";
+import {
+  createAuthSession, ensureAuthSessionSchema, pruneExpiredAuthSessions,
+  resolveAuthSession, revokeAuthSession, verifyAccessPassword
+} from "./auth-session.js";
 
 assertDevelopmentOnlyRuntime(process.env.NODE_ENV);
 
@@ -23,11 +27,24 @@ await app.register(sensible);
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 await ensureExecutionApprovalSchema(pool);
 await ensureArtifactSchema(pool);
+await ensureAuthSessionSchema(pool);
+await pruneExpiredAuthSessions(pool);
 const artifactRepository = new ArtifactRepository(
   pool,
   new LocalArtifactStore(process.env.ARTIFACT_STORE_DIR ?? "/var/lib/ai-locman/artifacts")
 );
-const DEV_OWNER_ID = "local-dev-user";
+const SINGLE_OWNER_ID = process.env.LOCMAN_OWNER_ID ?? "local-dev-user";
+const ACCESS_PASSWORD = process.env.LOCMAN_ACCESS_PASSWORD ?? "";
+if (ACCESS_PASSWORD.length < 12) {
+  throw new Error("LOCMAN_ACCESS_PASSWORD must be configured with at least 12 characters; refusing to start an unauthenticated API");
+}
+type RequestSession = { ownerId: string; token: string; expiresAt: string };
+const requestSessions = new WeakMap<object, RequestSession>();
+function ownerId(request: object): string {
+  const session = requestSessions.get(request);
+  if (!session) throw new Error("Authenticated request context is missing");
+  return session.ownerId;
+}
 const DEFAULT_MODEL = process.env.OPENROUTER_DEFAULT_MODEL ?? "openrouter/auto";
 await pool.query(`
   CREATE TABLE IF NOT EXISTS project_memory (
@@ -96,11 +113,46 @@ function getTaskQueue() {
 
 app.get("/health", async () => ({ status: "ok", service: "ai-locman-api", version: "0.2.0" }));
 
+// All API routes are private by default. Only health, password exchange and the
+// one-time GitHub App callback are reachable without an existing bearer session.
+app.addHook("preHandler", async (request, reply) => {
+  if (request.url.split("?")[0] === "/health" ||
+      request.url.split("?")[0] === "/api/v1/auth/login" ||
+      request.url.split("?")[0] === "/api/v1/github/callback") return;
+  const authorization = request.headers.authorization ?? "";
+  const match = /^Bearer ([A-Za-z0-9_-]{43})$/.exec(authorization);
+  if (!match) return reply.code(401).send({ error: "Требуется авторизация AI Locman" });
+  const session = await resolveAuthSession(pool, match[1]);
+  if (!session) return reply.code(401).send({ error: "Сессия недействительна или истекла. Войди снова." });
+  requestSessions.set(request, { ...session, token: match[1] });
+});
+
+const loginSchema = z.object({ password: z.string().min(1).max(4096) });
+app.post("/api/v1/auth/login", async (request, reply) => {
+  const parsed = loginSchema.safeParse(request.body);
+  if (!parsed.success || !verifyAccessPassword(parsed.success ? parsed.data.password : "", ACCESS_PASSWORD)) {
+    return reply.code(401).send({ error: "Неверный пароль" });
+  }
+  const session = await createAuthSession(pool, SINGLE_OWNER_ID, 30);
+  return reply.code(201).send({ token: session.token, tokenType: "Bearer", expiresAt: session.expiresAt });
+});
+
+app.get("/api/v1/auth/me", async (request) => {
+  const session = requestSessions.get(request)!;
+  return { ownerId: session.ownerId, expiresAt: session.expiresAt };
+});
+
+app.post("/api/v1/auth/logout", async (request, reply) => {
+  const session = requestSessions.get(request)!;
+  await revokeAuthSession(pool, session.token);
+  return reply.code(204).send();
+});
+
 // Development MVP only. Do not expose this unauthenticated API to the public internet.
 app.get("/api/v1/projects", async () => {
   const { rows } = await pool.query(
     "SELECT id, name, description, model, github_repository, created_at FROM projects WHERE owner_id = $1 ORDER BY created_at DESC LIMIT 100",
-    [DEV_OWNER_ID]
+    [ownerId(request)]
   );
   return { items: rows };
 });
@@ -118,7 +170,7 @@ app.post("/api/v1/projects", async (request, reply) => {
   const { rows } = await pool.query(
     `INSERT INTO projects (owner_id, name, description, model)
      VALUES ($1, $2, $3, $4) RETURNING id, name, description, model, created_at`,
-    [DEV_OWNER_ID, name, description, model]
+    [ownerId(request), name, description, model]
   );
   return reply.code(201).send(rows[0]);
 });
@@ -139,7 +191,7 @@ app.patch("/api/v1/projects/:projectId", async (request, reply) => {
   if (!parsedBody.success) return reply.badRequest(parsedBody.error.message);
   const current = await pool.query(
     "SELECT id, name, description, model, instructions, github_repository FROM projects WHERE id=$1 AND owner_id=$2",
-    [parsedParams.data.projectId, DEV_OWNER_ID]
+    [parsedParams.data.projectId, ownerId(request)]
   );
   if (!current.rowCount) return reply.notFound("Проект не найден");
   const next = { ...current.rows[0], githubRepository: current.rows[0].github_repository, ...parsedBody.data };
@@ -157,7 +209,7 @@ const conversationParam = z.object({ conversationId: z.string().uuid() });
 app.get("/api/v1/projects/:projectId/conversations", async (request, reply) => {
   const parsed = projectParam.safeParse(request.params);
   if (!parsed.success) return reply.badRequest(parsed.error.message);
-  const owned = await pool.query("SELECT id FROM projects WHERE id = $1 AND owner_id = $2", [parsed.data.projectId, DEV_OWNER_ID]);
+  const owned = await pool.query("SELECT id FROM projects WHERE id = $1 AND owner_id = $2", [parsed.data.projectId, ownerId(request)]);
   if (!owned.rowCount) return reply.notFound("Проект не найден");
   const { rows } = await pool.query(
     `SELECT c.id, c.title, c.created_at,
@@ -175,7 +227,7 @@ app.post("/api/v1/projects/:projectId/conversations", async (request, reply) => 
   const parsedBody = createConversationSchema.safeParse(request.body ?? {});
   if (!parsedParams.success) return reply.badRequest(parsedParams.error.message);
   if (!parsedBody.success) return reply.badRequest(parsedBody.error.message);
-  const owned = await pool.query("SELECT id FROM projects WHERE id=$1 AND owner_id=$2", [parsedParams.data.projectId, DEV_OWNER_ID]);
+  const owned = await pool.query("SELECT id FROM projects WHERE id=$1 AND owner_id=$2", [parsedParams.data.projectId, ownerId(request)]);
   if (!owned.rowCount) return reply.notFound("Проект не найден");
   const { rows } = await pool.query(
     "INSERT INTO conversations (project_id, title) VALUES ($1, $2) RETURNING id, title, created_at",
@@ -194,7 +246,7 @@ app.patch("/api/v1/conversations/:conversationId", async (request, reply) => {
     `UPDATE conversations c SET title=$1
      FROM projects p WHERE c.id=$2 AND p.id=c.project_id AND p.owner_id=$3
      RETURNING c.id, c.title, c.created_at`,
-    [parsedBody.data.title, parsedParams.data.conversationId, DEV_OWNER_ID]
+    [parsedBody.data.title, parsedParams.data.conversationId, ownerId(request)]
   );
   if (!rows.length) return reply.notFound("Диалог не найден");
   return rows[0];
@@ -206,7 +258,7 @@ app.delete("/api/v1/conversations/:conversationId", async (request, reply) => {
   const { rowCount } = await pool.query(
     `DELETE FROM conversations c USING projects p
      WHERE c.id=$1 AND p.id=c.project_id AND p.owner_id=$2`,
-    [parsedParams.data.conversationId, DEV_OWNER_ID]
+    [parsedParams.data.conversationId, ownerId(request)]
   );
   if (!rowCount) return reply.notFound("Диалог не найден");
   return reply.code(204).send();
@@ -221,12 +273,12 @@ app.get("/api/v1/conversations/:conversationId/messages", async (request, reply)
      JOIN projects p ON p.id = c.project_id
      WHERE c.id = $1 AND p.owner_id = $2 AND m.role IN ('user','assistant')
      ORDER BY m.created_at ASC LIMIT 1000`,
-    [parsed.data.conversationId, DEV_OWNER_ID]
+    [parsed.data.conversationId, ownerId(request)]
   );
   if (!rows.length) {
     const exists = await pool.query(
       "SELECT c.id FROM conversations c JOIN projects p ON p.id=c.project_id WHERE c.id=$1 AND p.owner_id=$2",
-      [parsed.data.conversationId, DEV_OWNER_ID]
+      [parsed.data.conversationId, ownerId(request)]
     );
     if (!exists.rowCount) return reply.notFound("Диалог не найден");
   }
@@ -236,7 +288,7 @@ app.get("/api/v1/conversations/:conversationId/messages", async (request, reply)
 app.get("/api/v1/projects/:projectId/memory", async (request, reply) => {
   const parsed = projectParam.safeParse(request.params);
   if (!parsed.success) return reply.badRequest(parsed.error.message);
-  const owned = await pool.query("SELECT id FROM projects WHERE id=$1 AND owner_id=$2", [parsed.data.projectId, DEV_OWNER_ID]);
+  const owned = await pool.query("SELECT id FROM projects WHERE id=$1 AND owner_id=$2", [parsed.data.projectId, ownerId(request)]);
   if (!owned.rowCount) return reply.notFound("Проект не найден");
   const { rows } = await pool.query(
     "SELECT id, section, content, updated_at FROM project_memory WHERE project_id=$1 ORDER BY section",
@@ -255,7 +307,7 @@ app.put("/api/v1/projects/:projectId/memory", async (request, reply) => {
   const parsedBody = memorySchema.safeParse(request.body);
   if (!parsedParams.success) return reply.badRequest(parsedParams.error.message);
   if (!parsedBody.success) return reply.badRequest(parsedBody.error.message);
-  const owned = await pool.query("SELECT id FROM projects WHERE id=$1 AND owner_id=$2", [parsedParams.data.projectId, DEV_OWNER_ID]);
+  const owned = await pool.query("SELECT id FROM projects WHERE id=$1 AND owner_id=$2", [parsedParams.data.projectId, ownerId(request)]);
   if (!owned.rowCount) return reply.notFound("Проект не найден");
   const { rows } = await pool.query(
     `INSERT INTO project_memory (project_id, section, content)
@@ -289,7 +341,7 @@ app.post("/api/v1/chat", async (request, reply) => {
   const { projectId, message } = parsed.data;
   const projectResult = await pool.query(
     "SELECT id, name, instructions, model FROM projects WHERE id = $1 AND owner_id = $2",
-    [projectId, DEV_OWNER_ID]
+    [projectId, ownerId(request)]
   );
   const project = projectResult.rows[0];
   if (!project) return reply.notFound("Проект не найден");
@@ -373,7 +425,7 @@ app.post("/api/v1/projects/:projectId/tasks", async (request, reply) => {
   if (!parsedBody.success) return reply.badRequest(parsedBody.error.message);
   const owned = await pool.query(
     "SELECT id, model FROM projects WHERE id=$1 AND owner_id=$2",
-    [parsedProject.data.projectId, DEV_OWNER_ID]
+    [parsedProject.data.projectId, ownerId(request)]
   );
   if (!owned.rowCount) return reply.notFound("Проект не найден");
   if (parsedBody.data.conversationId) {
@@ -409,7 +461,7 @@ app.post("/api/v1/projects/:projectId/tasks", async (request, reply) => {
 app.get("/api/v1/projects/:projectId/tasks", async (request, reply) => {
   const parsed = projectParam.safeParse(request.params);
   if (!parsed.success) return reply.badRequest(parsed.error.message);
-  const owned = await pool.query("SELECT id FROM projects WHERE id=$1 AND owner_id=$2", [parsed.data.projectId, DEV_OWNER_ID]);
+  const owned = await pool.query("SELECT id FROM projects WHERE id=$1 AND owner_id=$2", [parsed.data.projectId, ownerId(request)]);
   if (!owned.rowCount) return reply.notFound("Проект не найден");
   const { rows } = await pool.query(
     `SELECT id, conversation_id, prompt, model, status, result, error, created_at, updated_at, started_at, completed_at
@@ -424,7 +476,7 @@ const taskParam = z.object({ taskId: z.string().uuid() });
 app.get("/api/v1/tasks/:taskId/events", async (request, reply) => {
   const parsed = taskParam.safeParse(request.params);
   if (!parsed.success) return reply.badRequest(parsed.error.message);
-  const owned = await pool.query("SELECT t.id FROM agent_tasks t JOIN projects p ON p.id=t.project_id WHERE t.id=$1 AND p.owner_id=$2",[parsed.data.taskId,DEV_OWNER_ID]);
+  const owned = await pool.query("SELECT t.id FROM agent_tasks t JOIN projects p ON p.id=t.project_id WHERE t.id=$1 AND p.owner_id=$2",[parsed.data.taskId,ownerId(request)]);
   if (!owned.rowCount) return reply.notFound("Задача не найдена");
   const { rows } = await pool.query("SELECT id,event_type,tool_name,arguments,result,created_at FROM agent_task_events WHERE task_id=$1 ORDER BY created_at ASC LIMIT 200",[parsed.data.taskId]);
   return { items: rows };
@@ -438,7 +490,7 @@ app.get("/api/v1/tasks/:taskId", async (request, reply) => {
             t.created_at, t.updated_at, t.started_at, t.completed_at
      FROM agent_tasks t JOIN projects p ON p.id=t.project_id
      WHERE t.id=$1 AND p.owner_id=$2`,
-    [parsed.data.taskId, DEV_OWNER_ID]
+    [parsed.data.taskId, ownerId(request)]
   );
   if (!rows.length) return reply.notFound("Задача не найдена");
   return rows[0];
@@ -447,7 +499,7 @@ app.get("/api/v1/tasks/:taskId", async (request, reply) => {
 app.get("/api/v1/tasks/:taskId/artifacts", async (request, reply) => {
   const parsed = taskParam.safeParse(request.params);
   if (!parsed.success) return reply.badRequest(parsed.error.message);
-  const items = await artifactRepository.listTaskArtifacts({ ownerId: DEV_OWNER_ID, taskId: parsed.data.taskId });
+  const items = await artifactRepository.listTaskArtifacts({ ownerId: ownerId(request), taskId: parsed.data.taskId });
   if (items === null) return reply.notFound("Задача не найдена");
   return { items };
 });
@@ -456,7 +508,7 @@ app.get("/api/v1/tasks/:taskId/artifacts/:artifactId", async (request, reply) =>
   const parsed = z.object({ taskId: z.string().uuid(), artifactId: z.string().uuid() }).safeParse(request.params);
   if (!parsed.success) return reply.badRequest(parsed.error.message);
   const item = await artifactRepository.readTaskArtifact({
-    ownerId: DEV_OWNER_ID, taskId: parsed.data.taskId, artifactId: parsed.data.artifactId
+    ownerId: ownerId(request), taskId: parsed.data.taskId, artifactId: parsed.data.artifactId
   });
   if (!item) return reply.notFound("Артефакт не найден");
   const filename = item.descriptor.path.split("/").pop()?.replace(/[^A-Za-z0-9._-]/g, "_") || "artifact.bin";
@@ -473,7 +525,7 @@ app.post("/api/v1/tasks/:taskId/cancel", async (request, reply) => {
   if (!parsed.success) return reply.badRequest(parsed.error.message);
   const owned = await pool.query(
     "SELECT t.id, t.status FROM agent_tasks t JOIN projects p ON p.id=t.project_id WHERE t.id=$1 AND p.owner_id=$2",
-    [parsed.data.taskId, DEV_OWNER_ID]
+    [parsed.data.taskId, ownerId(request)]
   );
   if (!owned.rowCount) return reply.notFound("Задача не найдена");
   if (["completed", "failed", "cancelled"].includes(owned.rows[0].status)) {
@@ -532,10 +584,10 @@ async function githubInstallationToken(installationId: number): Promise<string> 
   return token;
 }
 
-async function githubInstallationRows() {
+async function githubInstallationRows(owner: string) {
   const { rows } = await pool.query(
     "SELECT installation_id, account_login, account_type FROM github_installations WHERE owner_id=$1 ORDER BY account_login",
-    [DEV_OWNER_ID]
+    [owner]
   );
   return rows as Array<{ installation_id: string | number; account_login: string; account_type: string }>;
 }
@@ -563,7 +615,7 @@ async function githubInstallationRequest(
 }
 
 async function githubRepoToken(owner: string, repo: string): Promise<string> {
-  const installations = await githubInstallationRows();
+  const installations = await githubInstallationRows(ownerId(request));
   for (const installation of installations) {
     const token = await githubInstallationToken(Number(installation.installation_id));
     try {
@@ -590,7 +642,7 @@ app.get("/api/v1/github/connect", async (_request, reply) => {
   const state = randomBytes(24).toString("base64url");
   await pool.query(
     "INSERT INTO github_install_states (state_hash, owner_id, expires_at) VALUES ($1, $2, now() + interval '30 minutes')",
-    [createHash("sha256").update(state).digest("hex"), DEV_OWNER_ID]
+    [createHash("sha256").update(state).digest("hex"), ownerId(request)]
   );
   const url = new URL("https://github.com/apps/" + encodeURIComponent(slug) + "/installations/new");
   url.searchParams.set("state", state);
@@ -632,18 +684,18 @@ app.get("/api/v1/github/callback", async (request, reply) => {
 });
 
 app.get("/api/v1/github/status", async () => {
-  const installations = await githubInstallationRows();
+  const installations = await githubInstallationRows(ownerId(request));
   return { connected: installations.length > 0, installations };
 });
 
 app.delete("/api/v1/github/connection", async (_request, reply) => {
-  await pool.query("DELETE FROM github_installations WHERE owner_id=$1", [DEV_OWNER_ID]);
+  await pool.query("DELETE FROM github_installations WHERE owner_id=$1", [ownerId(request)]);
   return reply.code(204).send();
 });
 
 app.get("/api/v1/github/repositories", async (request, reply) => {
   try {
-    const installations = await githubInstallationRows();
+    const installations = await githubInstallationRows(ownerId(request));
     const repositories: unknown[] = [];
     for (const installation of installations) {
       const token = await githubInstallationToken(Number(installation.installation_id));
