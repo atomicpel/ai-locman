@@ -43,6 +43,78 @@ app.post("/api/v1/projects", async (request, reply) => {
   return reply.code(201).send(rows[0]);
 });
 
+
+const projectParam = z.object({ projectId: z.string().uuid() });
+const conversationParam = z.object({ conversationId: z.string().uuid() });
+
+app.get("/api/v1/projects/:projectId/conversations", async (request, reply) => {
+  const parsed = projectParam.safeParse(request.params);
+  if (!parsed.success) return reply.badRequest(parsed.error.message);
+  const owned = await pool.query("SELECT id FROM projects WHERE id = $1 AND owner_id = $2", [parsed.data.projectId, DEV_OWNER_ID]);
+  if (!owned.rowCount) return reply.notFound("Проект не найден");
+  const { rows } = await pool.query(
+    `SELECT c.id, c.title, c.created_at,
+      (SELECT m.content FROM messages m WHERE m.conversation_id = c.id ORDER BY m.created_at DESC LIMIT 1) AS last_message
+     FROM conversations c WHERE c.project_id = $1 ORDER BY c.created_at DESC LIMIT 200`,
+    [parsed.data.projectId]
+  );
+  return { items: rows };
+});
+
+app.get("/api/v1/conversations/:conversationId/messages", async (request, reply) => {
+  const parsed = conversationParam.safeParse(request.params);
+  if (!parsed.success) return reply.badRequest(parsed.error.message);
+  const { rows } = await pool.query(
+    `SELECT m.id, m.role, m.content, m.model, m.created_at
+     FROM messages m JOIN conversations c ON c.id = m.conversation_id
+     JOIN projects p ON p.id = c.project_id
+     WHERE c.id = $1 AND p.owner_id = $2 AND m.role IN ('user','assistant')
+     ORDER BY m.created_at ASC LIMIT 1000`,
+    [parsed.data.conversationId, DEV_OWNER_ID]
+  );
+  if (!rows.length) {
+    const exists = await pool.query(
+      "SELECT c.id FROM conversations c JOIN projects p ON p.id=c.project_id WHERE c.id=$1 AND p.owner_id=$2",
+      [parsed.data.conversationId, DEV_OWNER_ID]
+    );
+    if (!exists.rowCount) return reply.notFound("Диалог не найден");
+  }
+  return { items: rows };
+});
+
+app.get("/api/v1/projects/:projectId/memory", async (request, reply) => {
+  const parsed = projectParam.safeParse(request.params);
+  if (!parsed.success) return reply.badRequest(parsed.error.message);
+  const { rows } = await pool.query(
+    "SELECT id, section, content, updated_at FROM project_memory WHERE project_id=$1 ORDER BY section",
+    [parsed.data.projectId]
+  );
+  const owned = await pool.query("SELECT id FROM projects WHERE id=$1 AND owner_id=$2", [parsed.data.projectId, DEV_OWNER_ID]);
+  if (!owned.rowCount) return reply.notFound("Проект не найден");
+  return { items: rows };
+});
+
+const memorySchema = z.object({
+  section: z.enum(["architecture", "decisions", "knowledge"]),
+  content: z.string().max(50000)
+});
+app.put("/api/v1/projects/:projectId/memory", async (request, reply) => {
+  const parsedParams = projectParam.safeParse(request.params);
+  const parsedBody = memorySchema.safeParse(request.body);
+  if (!parsedParams.success) return reply.badRequest(parsedParams.error.message);
+  if (!parsedBody.success) return reply.badRequest(parsedBody.error.message);
+  const owned = await pool.query("SELECT id FROM projects WHERE id=$1 AND owner_id=$2", [parsedParams.data.projectId, DEV_OWNER_ID]);
+  if (!owned.rowCount) return reply.notFound("Проект не найден");
+  const { rows } = await pool.query(
+    `INSERT INTO project_memory (project_id, section, content)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (project_id, section) DO UPDATE SET content=EXCLUDED.content, updated_at=now()
+     RETURNING id, section, content, updated_at`,
+    [parsedParams.data.projectId, parsedBody.data.section, parsedBody.data.content]
+  );
+  return rows[0];
+});
+
 app.get("/api/v1/models", async (_request, reply) => {
   const headers: Record<string, string> = {};
   if (process.env.OPENROUTER_API_KEY) headers.Authorization = `Bearer ${process.env.OPENROUTER_API_KEY}`;
