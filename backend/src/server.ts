@@ -10,6 +10,8 @@ import { createHash, createSign, randomBytes } from "node:crypto";
 import { assertDevelopmentOnlyRuntime } from "./runtime-safety.js";
 import { ensureExecutionApprovalSchema } from "./approval-schema.js";
 import { ensureArtifactSchema } from "./artifact-schema.js";
+import { ArtifactRepository } from "./artifact-repository.js";
+import { LocalArtifactStore } from "./artifact-store.js";
 
 assertDevelopmentOnlyRuntime(process.env.NODE_ENV);
 
@@ -21,6 +23,10 @@ await app.register(sensible);
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 await ensureExecutionApprovalSchema(pool);
 await ensureArtifactSchema(pool);
+const artifactRepository = new ArtifactRepository(
+  pool,
+  new LocalArtifactStore(process.env.ARTIFACT_STORE_DIR ?? "/var/lib/ai-locman/artifacts")
+);
 const DEV_OWNER_ID = "local-dev-user";
 const DEFAULT_MODEL = process.env.OPENROUTER_DEFAULT_MODEL ?? "openrouter/auto";
 await pool.query(`
@@ -436,6 +442,30 @@ app.get("/api/v1/tasks/:taskId", async (request, reply) => {
   );
   if (!rows.length) return reply.notFound("Задача не найдена");
   return rows[0];
+});
+
+app.get("/api/v1/tasks/:taskId/artifacts", async (request, reply) => {
+  const parsed = taskParam.safeParse(request.params);
+  if (!parsed.success) return reply.badRequest(parsed.error.message);
+  const items = await artifactRepository.listTaskArtifacts({ ownerId: DEV_OWNER_ID, taskId: parsed.data.taskId });
+  if (items === null) return reply.notFound("Задача не найдена");
+  return { items };
+});
+
+app.get("/api/v1/tasks/:taskId/artifacts/:artifactId", async (request, reply) => {
+  const parsed = z.object({ taskId: z.string().uuid(), artifactId: z.string().uuid() }).safeParse(request.params);
+  if (!parsed.success) return reply.badRequest(parsed.error.message);
+  const item = await artifactRepository.readTaskArtifact({
+    ownerId: DEV_OWNER_ID, taskId: parsed.data.taskId, artifactId: parsed.data.artifactId
+  });
+  if (!item) return reply.notFound("Артефакт не найден");
+  const filename = item.descriptor.path.split("/").pop()?.replace(/[^A-Za-z0-9._-]/g, "_") || "artifact.bin";
+  return reply
+    .header("Content-Type", "application/octet-stream")
+    .header("Content-Length", String(item.data.byteLength))
+    .header("Content-Disposition", 'attachment; filename="' + filename + '"')
+    .header("Cache-Control", "private, no-store")
+    .send(item.data);
 });
 
 app.post("/api/v1/tasks/:taskId/cancel", async (request, reply) => {
