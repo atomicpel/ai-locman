@@ -28,3 +28,7 @@
 Текущий MVP использует фиксированного dev-пользователя и не подходит для публичного размещения. Не выставляйте backend в интернет. До удалённого развёртывания обязательны аутентификация, TLS, разграничение доступа и безопасное хранение секретов.
 
 Подробности будут в `docs/ARCHITECTURE.md`, `docs/IMPLEMENTATION_PLAN.md` и `docs/SECURITY_MODEL.md`.
+
+## GitHub App setup
+
+Инструкция по созданию GitHub App, настройке Setup URL и подключению выбранных репозиториев: [docs/GITHUB_APP_SETUP.md](docs/GITHUB_APP_SETUP.md). На текущем этапе GitHub API read-only; операции записи и merge не включены.

@@ -6,6 +6,7 @@ import sensible from "@fastify/sensible";
 import { z } from "zod";
 import { Pool } from "pg";
 import { Queue } from "bullmq";
+import { createHash, createSign, randomBytes } from "node:crypto";
 
 const app = Fastify({ logger: true, bodyLimit: 1_000_000 });
 await app.register(helmet);
@@ -24,7 +25,22 @@ await pool.query(`
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (project_id, section)
   );
-  ALTER TABLE projects ADD COLUMN IF NOT EXISTS model TEXT NOT NULL DEFAULT 'openrouter/auto'
+  ALTER TABLE projects ADD COLUMN IF NOT EXISTS model TEXT NOT NULL DEFAULT 'openrouter/auto';
+  CREATE TABLE IF NOT EXISTS github_installations (
+    owner_id TEXT NOT NULL,
+    installation_id BIGINT NOT NULL,
+    account_login TEXT NOT NULL,
+    account_type TEXT NOT NULL DEFAULT 'User',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (owner_id, installation_id)
+  );
+  CREATE TABLE IF NOT EXISTS github_install_states (
+    state_hash TEXT PRIMARY KEY,
+    owner_id TEXT NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )
 `);
 await pool.query(`
   ALTER TABLE agent_tasks
@@ -418,6 +434,275 @@ app.post("/api/v1/tasks/:taskId/cancel", async (request, reply) => {
   }
   return { id: parsed.data.taskId, status: "cancellation_requested" };
 });
+
+
+const GITHUB_API = "https://api.github.com";
+const GITHUB_API_VERSION = "2026-03-10";
+
+function githubAppJwt(): string {
+  const clientId = process.env.GITHUB_APP_CLIENT_ID ?? process.env.GITHUB_APP_ID;
+  const privateKey = process.env.GITHUB_APP_PRIVATE_KEY?.replace(/\\n/g, "\n");
+  if (!clientId || !privateKey) throw new Error("GITHUB_APP_CLIENT_ID and GITHUB_APP_PRIVATE_KEY are required");
+  const now = Math.floor(Date.now() / 1000);
+  const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
+  const header = encode({ alg: "RS256", typ: "JWT" });
+  const payload = encode({ iat: now - 60, exp: now + 9 * 60, iss: clientId });
+  const unsigned = header + "." + payload;
+  const signer = createSign("RSA-SHA256");
+  signer.update(unsigned);
+  signer.end();
+  return unsigned + "." + signer.sign(privateKey, "base64url");
+}
+
+async function githubAppRequest(path: string, method: "GET" | "POST" = "GET") {
+  const response = await fetch(GITHUB_API + path, {
+    method,
+    headers: {
+      Accept: "application/vnd.github+json",
+      Authorization: "Bearer " + githubAppJwt(),
+      "X-GitHub-Api-Version": GITHUB_API_VERSION
+    }
+  });
+  const raw = await response.text();
+  const payload = raw ? JSON.parse(raw) as Record<string, unknown> : {};
+  if (!response.ok) throw new Error("GitHub API " + response.status + ": " + String(payload.message ?? raw).slice(0, 1000));
+  return payload;
+}
+
+async function githubInstallationToken(installationId: number): Promise<string> {
+  const payload = await githubAppRequest("/app/installations/" + installationId + "/access_tokens", "POST");
+  const token = payload.token;
+  if (typeof token !== "string" || !token) throw new Error("GitHub did not return an installation token");
+  return token;
+}
+
+async function githubInstallationRows() {
+  const { rows } = await pool.query(
+    "SELECT installation_id, account_login, account_type FROM github_installations WHERE owner_id=$1 ORDER BY account_login",
+    [DEV_OWNER_ID]
+  );
+  return rows as Array<{ installation_id: string | number; account_login: string; account_type: string }>;
+}
+
+async function githubInstallationRequest(token: string, path: string, accept = "application/vnd.github+json") {
+  const response = await fetch(GITHUB_API + path, {
+    headers: {
+      Accept: accept,
+      Authorization: "Bearer " + token,
+      "X-GitHub-Api-Version": GITHUB_API_VERSION
+    }
+  });
+  const raw = await response.text();
+  if (!response.ok) {
+    let message = raw;
+    try { message = String((JSON.parse(raw) as Record<string, unknown>).message ?? raw); } catch { /* keep raw body */ }
+    throw new Error("GitHub API " + response.status + ": " + message.slice(0, 1000));
+  }
+  if (accept === "application/vnd.github.diff") return raw;
+  return raw ? JSON.parse(raw) as Record<string, unknown> : {};
+}
+
+async function githubRepoToken(owner: string, repo: string): Promise<string> {
+  const installations = await githubInstallationRows();
+  for (const installation of installations) {
+    const token = await githubInstallationToken(Number(installation.installation_id));
+    try {
+      await githubInstallationRequest(token, "/repos/" + encodeURIComponent(owner) + "/" + encodeURIComponent(repo));
+      return token;
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith("GitHub API 404")) continue;
+      throw error;
+    }
+  }
+  throw new Error("Репозиторий не входит в доступные установки GitHub App");
+}
+
+const githubRepoParams = z.object({
+  owner: z.string().regex(/^[A-Za-z0-9_.-]{1,100}$/),
+  repo: z.string().regex(/^[A-Za-z0-9_.-]{1,100}$/)
+});
+
+app.get("/api/v1/github/connect", async (_request, reply) => {
+  const slug = process.env.GITHUB_APP_SLUG;
+  if (!slug || !(process.env.GITHUB_APP_CLIENT_ID ?? process.env.GITHUB_APP_ID) || !process.env.GITHUB_APP_PRIVATE_KEY) {
+    return reply.code(503).send({ error: "GitHub App не настроен: добавь GITHUB_APP_SLUG, GITHUB_APP_CLIENT_ID и GITHUB_APP_PRIVATE_KEY в backend .env" });
+  }
+  const state = randomBytes(24).toString("base64url");
+  await pool.query(
+    "INSERT INTO github_install_states (state_hash, owner_id, expires_at) VALUES ($1, $2, now() + interval '30 minutes')",
+    [createHash("sha256").update(state).digest("hex"), DEV_OWNER_ID]
+  );
+  const url = new URL("https://github.com/apps/" + encodeURIComponent(slug) + "/installations/new");
+  url.searchParams.set("state", state);
+  return reply.redirect(url.toString());
+});
+
+app.get("/api/v1/github/callback", async (request, reply) => {
+  const query = z.object({
+    state: z.string().min(20).max(200),
+    installation_id: z.coerce.number().int().positive()
+  }).safeParse(request.query);
+  if (!query.success) return reply.badRequest("Некорректные параметры GitHub callback");
+  const stateHash = createHash("sha256").update(query.data.state).digest("hex");
+  const stateResult = await pool.query(
+    "SELECT owner_id FROM github_install_states WHERE state_hash=$1 AND expires_at>now()",
+    [stateHash]
+  );
+  if (!stateResult.rowCount) return reply.code(400).send("Ссылка подключения GitHub устарела или уже использована. Вернись в AI Locman и начни подключение заново.");
+  await pool.query("DELETE FROM github_install_states WHERE state_hash=$1", [stateHash]);
+  try {
+    const installation = await githubAppRequest("/app/installations/" + query.data.installation_id);
+    const account = installation.account as Record<string, unknown> | undefined;
+    const login = typeof account?.login === "string" ? account.login : "GitHub account";
+    const type = typeof account?.type === "string" ? account.type : "User";
+    await pool.query(
+      \`INSERT INTO github_installations (owner_id, installation_id, account_login, account_type)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (owner_id, installation_id) DO UPDATE
+       SET account_login=EXCLUDED.account_login, account_type=EXCLUDED.account_type, updated_at=now()\`,
+      [stateResult.rows[0].owner_id, query.data.installation_id, login, type]
+    );
+    return reply.type("text/html; charset=utf-8").send(
+      "<!doctype html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'><title>AI Locman</title></head><body style='font-family:system-ui;background:#0a1020;color:#eaf0fa;padding:32px'><h2>GitHub подключён</h2><p>Установка подтверждена. Можно закрыть эту страницу и вернуться в AI Locman.</p></body></html>"
+    );
+  } catch (error) {
+    request.log.error({ err: error }, "GitHub installation validation failed");
+    return reply.code(502).send("Не удалось проверить установку GitHub App. Проверь App ID и private key на backend.");
+  }
+});
+
+app.get("/api/v1/github/status", async () => {
+  const installations = await githubInstallationRows();
+  return { connected: installations.length > 0, installations };
+});
+
+app.delete("/api/v1/github/connection", async (_request, reply) => {
+  await pool.query("DELETE FROM github_installations WHERE owner_id=$1", [DEV_OWNER_ID]);
+  return reply.code(204).send();
+});
+
+app.get("/api/v1/github/repositories", async (request, reply) => {
+  try {
+    const installations = await githubInstallationRows();
+    const repositories: unknown[] = [];
+    for (const installation of installations) {
+      const token = await githubInstallationToken(Number(installation.installation_id));
+      let page = 1;
+      while (page <= 20) {
+        const result = await githubInstallationRequest(token, "/installation/repositories?per_page=100&page=" + page);
+        const items = Array.isArray(result.repositories) ? result.repositories : [];
+        repositories.push(...items);
+        if (items.length < 100 || repositories.length >= Number(result.total_count ?? 0)) break;
+        page++;
+      }
+    }
+    return { items: repositories };
+  } catch (error) {
+    request.log.error({ err: error }, "Could not list GitHub repositories");
+    return reply.code(502).send({ error: error instanceof Error ? error.message : "GitHub API error" });
+  }
+});
+
+app.get("/api/v1/github/repositories/:owner/:repo", async (request, reply) => {
+  const parsed = githubRepoParams.safeParse(request.params);
+  if (!parsed.success) return reply.badRequest(parsed.error.message);
+  try {
+    const token = await githubRepoToken(parsed.data.owner, parsed.data.repo);
+    return await githubInstallationRequest(token, "/repos/" + encodeURIComponent(parsed.data.owner) + "/" + encodeURIComponent(parsed.data.repo));
+  } catch (error) {
+    return reply.code(502).send({ error: error instanceof Error ? error.message : "GitHub API error" });
+  }
+});
+
+app.get("/api/v1/github/repositories/:owner/:repo/branches", async (request, reply) => {
+  const parsed = githubRepoParams.safeParse(request.params);
+  if (!parsed.success) return reply.badRequest(parsed.error.message);
+  try {
+    const token = await githubRepoToken(parsed.data.owner, parsed.data.repo);
+    return await githubInstallationRequest(token, "/repos/" + encodeURIComponent(parsed.data.owner) + "/" + encodeURIComponent(parsed.data.repo) + "/branches?per_page=100");
+  } catch (error) {
+    return reply.code(502).send({ error: error instanceof Error ? error.message : "GitHub API error" });
+  }
+});
+
+app.get("/api/v1/github/repositories/:owner/:repo/contents", async (request, reply) => {
+  const parsed = githubRepoParams.safeParse(request.params);
+  const query = z.object({
+    path: z.string().max(1000).optional(),
+    ref: z.string().max(255).optional()
+  }).safeParse(request.query);
+  if (!parsed.success) return reply.badRequest(parsed.error.message);
+  if (!query.success) return reply.badRequest(query.error.message);
+  try {
+    const token = await githubRepoToken(parsed.data.owner, parsed.data.repo);
+    const path = query.data.path
+      ? "/" + query.data.path.split("/").map(encodeURIComponent).join("/")
+      : "";
+    const params = new URLSearchParams();
+    if (query.data.ref) params.set("ref", query.data.ref);
+    const queryString = params.toString();
+    const suffix = queryString ? "?" + queryString : "";
+    return await githubInstallationRequest(
+      token,
+      "/repos/" + encodeURIComponent(parsed.data.owner) + "/" + encodeURIComponent(parsed.data.repo) + "/contents" + path + suffix
+    );
+  } catch (error) {
+    return reply.code(502).send({ error: error instanceof Error ? error.message : "GitHub API error" });
+  }
+});
+
+app.get("/api/v1/github/repositories/:owner/:repo/commits", async (request, reply) => {
+  const parsed = githubRepoParams.safeParse(request.params);
+  if (!parsed.success) return reply.badRequest(parsed.error.message);
+  try {
+    const token = await githubRepoToken(parsed.data.owner, parsed.data.repo);
+    return await githubInstallationRequest(token, "/repos/" + encodeURIComponent(parsed.data.owner) + "/" + encodeURIComponent(parsed.data.repo) + "/commits?per_page=50");
+  } catch (error) {
+    return reply.code(502).send({ error: error instanceof Error ? error.message : "GitHub API error" });
+  }
+});
+
+app.get("/api/v1/github/repositories/:owner/:repo/pulls", async (request, reply) => {
+  const parsed = githubRepoParams.safeParse(request.params);
+  if (!parsed.success) return reply.badRequest(parsed.error.message);
+  try {
+    const token = await githubRepoToken(parsed.data.owner, parsed.data.repo);
+    return await githubInstallationRequest(token, "/repos/" + encodeURIComponent(parsed.data.owner) + "/" + encodeURIComponent(parsed.data.repo) + "/pulls?state=all&per_page=50");
+  } catch (error) {
+    return reply.code(502).send({ error: error instanceof Error ? error.message : "GitHub API error" });
+  }
+});
+
+app.get("/api/v1/github/repositories/:owner/:repo/actions", async (request, reply) => {
+  const parsed = githubRepoParams.safeParse(request.params);
+  if (!parsed.success) return reply.badRequest(parsed.error.message);
+  try {
+    const token = await githubRepoToken(parsed.data.owner, parsed.data.repo);
+    return await githubInstallationRequest(token, "/repos/" + encodeURIComponent(parsed.data.owner) + "/" + encodeURIComponent(parsed.data.repo) + "/actions/runs?per_page=50");
+  } catch (error) {
+    return reply.code(502).send({ error: error instanceof Error ? error.message : "GitHub API error" });
+  }
+});
+
+app.get("/api/v1/github/repositories/:owner/:repo/compare", async (request, reply) => {
+  const parsed = githubRepoParams.safeParse(request.params);
+  const query = z.object({ base: z.string().min(1).max(255), head: z.string().min(1).max(255) }).safeParse(request.query);
+  if (!parsed.success) return reply.badRequest(parsed.error.message);
+  if (!query.success) return reply.badRequest(query.error.message);
+  try {
+    const token = await githubRepoToken(parsed.data.owner, parsed.data.repo);
+    const response = await githubInstallationRequest(
+      token,
+      "/repos/" + encodeURIComponent(parsed.data.owner) + "/" + encodeURIComponent(parsed.data.repo) +
+        "/compare/" + encodeURIComponent(query.data.base) + "..." + encodeURIComponent(query.data.head),
+      "application/vnd.github.diff"
+    );
+    return reply.type("text/plain; charset=utf-8").send(response);
+  } catch (error) {
+    return reply.code(502).send({ error: error instanceof Error ? error.message : "GitHub API error" });
+  }
+});
+
 
 const port = Number(process.env.PORT ?? 8080);
 await app.listen({ port, host: "0.0.0.0" });

@@ -20,3 +20,9 @@ The v0.2.0 backend uses a fixed development owner (local-dev-user) and does not 
 
 ## Project isolation
 Every query must be authorized against the authenticated user and active project. Cross-project context is disabled by default.
+
+## GitHub App token handling
+- The backend validates installation IDs with an App JWT before saving an installation.
+- Installation access tokens are minted server-side on demand and are not persisted or returned to Android.
+- Installations can only access repositories selected during the GitHub App installation.
+- The current backend still has no caller authentication; the fixed development owner means the integration is for trusted local testing only.

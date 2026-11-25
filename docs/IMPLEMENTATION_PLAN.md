@@ -23,9 +23,12 @@
 - [ ] Push notifications for completed/failed background tasks.
 
 ## Stage 2 — GitHub integration
-- GitHub App/OAuth connection with minimum permissions.
-- Repository picker, branch/file browser, diffs, commits, PRs and Actions logs.
-- Start on feature branches; never push directly to default branch by default.
+- [x] GitHub App installation flow with one-time state and server-side installation validation.
+- [x] Server-side installation-token creation; no GitHub token is sent to Android or stored in the database.
+- [x] Read-only API for installed repositories, branches, contents, commits, PRs, Actions runs and branch comparison.
+- [ ] Android repository picker and project-to-repository binding.
+- [ ] Agent-visible repository browser and task-scoped workspace.
+- [ ] Feature-branch writes, commits and PR creation with explicit approvals.
 
 ## Stage 3 — autonomous agent
 - [x] Redis/BullMQ durable queue, PostgreSQL task records, status polling and cancellation.
