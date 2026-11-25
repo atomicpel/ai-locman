@@ -38,5 +38,22 @@ services:
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
+
+  agent-worker:
+    image: node:22-alpine
+    working_dir: /workspace
+    command: sh -c "npm install && npm run worker"
+    volumes:
+      - ../backend:/workspace
+    env_file: ../.env
+    environment:
+      DATABASE_URL: postgres://locman:locman_dev@postgres:5432/ai_locman
+      REDIS_URL: redis://redis:6379
+      AGENT_WORKER_CONCURRENCY: 2
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    restart: unless-stopped
+
 volumes:
   pgdata:
