@@ -3,9 +3,9 @@
  * declared local development and test environments may start.
  */
 export function assertDevelopmentOnlyRuntime(nodeEnv: string | undefined): void {
-  if (nodeEnv !== "development" && nodeEnv !== "test") {
+  if (nodeEnv !== "development") {
     throw new Error(
-      "AI Locman backend is development-only: set NODE_ENV=development for local use; production/authenticated runtime is not implemented."
+      "AI Locman backend is development-only: set NODE_ENV=development for local use; authenticated runtime is not implemented."
     );
   }
 }
