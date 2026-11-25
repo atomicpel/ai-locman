@@ -2,15 +2,17 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { assertDevelopmentOnlyRuntime } from "./runtime-safety.js";
 
-test("allows local development and test environments", () => {
-  assert.doesNotThrow(() => assertDevelopmentOnlyRuntime(undefined));
+test("allows only explicitly declared local development and test environments", () => {
   assert.doesNotThrow(() => assertDevelopmentOnlyRuntime("development"));
   assert.doesNotThrow(() => assertDevelopmentOnlyRuntime("test"));
 });
 
-test("refuses production while the API uses a shared development owner identity", () => {
-  assert.throws(
-    () => assertDevelopmentOnlyRuntime("production"),
-    /development-only: authenticated owner identity is not configured/
-  );
+test("refuses production and an unset environment", () => {
+  for (const value of ["production", "staging", ""]) {
+    assert.throws(
+      () => assertDevelopmentOnlyRuntime(value),
+      /development-only/
+    );
+  }
+  assert.throws(() => assertDevelopmentOnlyRuntime(undefined), /development-only/);
 });
