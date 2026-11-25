@@ -3,8 +3,8 @@ import { z } from "zod";
 /** Validation boundary only: no process spawning, Docker access, or repository writes. */
 const uuid = z.string().uuid();
 const revision = z.string().regex(/^[a-f0-9]{40}$/i);
-const repository = z.string().regex(/^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}$/)
-  .refine((v) => !v.includes("..") && !v.startsWith(".") && !v.endsWith("."));
+const repository = z.string().regex(/^[A-Za-z0-9_-][A-Za-z0-9_.-]{0,99}\/[A-Za-z0-9_-][A-Za-z0-9_.-]{0,99}$/)
+  .refine((v) => v.split("/").every((part) => !part.includes("..") && !part.endsWith(".")));
 const artifactPath = z.string().min(1).max(240).refine((v) => {
   if (v.includes("\\") || v.includes(String.fromCharCode(0)) || v.startsWith("/") || /^[A-Za-z]:/.test(v)) return false;
   return v.split("/").every((part) => part.length > 0 && part !== "." && part !== "..");
