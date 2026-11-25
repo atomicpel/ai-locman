@@ -2,6 +2,9 @@ import "dotenv/config";
 import { Worker, type Job } from "bullmq";
 import { Pool } from "pg";
 import { createGitHubToolContext, createOpenRouterToolCalls, executeGitHubTool } from "./agent-tools.js";
+import { assertDevelopmentOnlyRuntime } from "./runtime-safety.js";
+
+assertDevelopmentOnlyRuntime(process.env.NODE_ENV);
 
 type TaskJob={taskId:string};
 type ToolCall={id:string;function:{name:string;arguments:string}};
