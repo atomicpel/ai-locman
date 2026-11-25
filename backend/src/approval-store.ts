@@ -93,6 +93,14 @@ export async function consumeExecutionApproval(
         AND nonce_sha256 = $10
         AND consumed_at IS NULL
         AND expires_at > now()
+        AND EXISTS (
+          SELECT 1
+            FROM agent_tasks t
+            JOIN projects p ON p.id = t.project_id
+           WHERE t.id = execution_approvals.task_id
+             AND t.project_id = execution_approvals.project_id
+             AND p.github_repository = execution_approvals.repository
+        )
       RETURNING id`,
     [
       input.approvalId,
