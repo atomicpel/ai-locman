@@ -55,6 +55,15 @@ await pool.query(`
     ADD COLUMN IF NOT EXISTS task_id UUID REFERENCES agent_tasks(id) ON DELETE SET NULL;
   CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_task_role
     ON messages(task_id, role) WHERE task_id IS NOT NULL;
+  ALTER TABLE agent_tasks DROP CONSTRAINT IF EXISTS agent_tasks_status_check;
+  ALTER TABLE agent_tasks ADD CONSTRAINT agent_tasks_status_check CHECK (status IN ('queued','planning','running','reviewing','waiting_approval','testing','completed','failed','cancelled'));
+  CREATE TABLE IF NOT EXISTS agent_task_events (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(), task_id UUID NOT NULL REFERENCES agent_tasks(id) ON DELETE CASCADE,
+    event_type TEXT NOT NULL CHECK (event_type IN ('plan','tool','review','notice')),
+    tool_name TEXT NOT NULL DEFAULT '', arguments JSONB NOT NULL DEFAULT '{}'::jsonb,
+    result TEXT NOT NULL DEFAULT '', created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  );
+  CREATE INDEX IF NOT EXISTS idx_task_events_task_created ON agent_task_events(task_id,created_at);
 `);
 
 
@@ -400,6 +409,16 @@ app.get("/api/v1/projects/:projectId/tasks", async (request, reply) => {
 });
 
 const taskParam = z.object({ taskId: z.string().uuid() });
+
+app.get("/api/v1/tasks/:taskId/events", async (request, reply) => {
+  const parsed = taskParam.safeParse(request.params);
+  if (!parsed.success) return reply.badRequest(parsed.error.message);
+  const owned = await pool.query("SELECT t.id FROM agent_tasks t JOIN projects p ON p.id=t.project_id WHERE t.id=$1 AND p.owner_id=$2",[parsed.data.taskId,DEV_OWNER_ID]);
+  if (!owned.rowCount) return reply.notFound("Задача не найдена");
+  const { rows } = await pool.query("SELECT id,event_type,tool_name,arguments,result,created_at FROM agent_task_events WHERE task_id=$1 ORDER BY created_at ASC LIMIT 200",[parsed.data.taskId]);
+  return { items: rows };
+});
+
 app.get("/api/v1/tasks/:taskId", async (request, reply) => {
   const parsed = taskParam.safeParse(request.params);
   if (!parsed.success) return reply.badRequest(parsed.error.message);
