@@ -72,6 +72,50 @@ app.get("/api/v1/projects/:projectId/conversations", async (request, reply) => {
   return { items: rows };
 });
 
+
+const createConversationSchema = z.object({ title: z.string().trim().min(1).max(120).default("Новый чат") });
+app.post("/api/v1/projects/:projectId/conversations", async (request, reply) => {
+  const parsedParams = projectParam.safeParse(request.params);
+  const parsedBody = createConversationSchema.safeParse(request.body ?? {});
+  if (!parsedParams.success) return reply.badRequest(parsedParams.error.message);
+  if (!parsedBody.success) return reply.badRequest(parsedBody.error.message);
+  const owned = await pool.query("SELECT id FROM projects WHERE id=$1 AND owner_id=$2", [parsedParams.data.projectId, DEV_OWNER_ID]);
+  if (!owned.rowCount) return reply.notFound("Проект не найден");
+  const { rows } = await pool.query(
+    "INSERT INTO conversations (project_id, title) VALUES ($1, $2) RETURNING id, title, created_at",
+    [parsedParams.data.projectId, parsedBody.data.title]
+  );
+  return reply.code(201).send(rows[0]);
+});
+
+const updateConversationSchema = z.object({ title: z.string().trim().min(1).max(120) });
+app.patch("/api/v1/conversations/:conversationId", async (request, reply) => {
+  const parsedParams = conversationParam.safeParse(request.params);
+  const parsedBody = updateConversationSchema.safeParse(request.body);
+  if (!parsedParams.success) return reply.badRequest(parsedParams.error.message);
+  if (!parsedBody.success) return reply.badRequest(parsedBody.error.message);
+  const { rows } = await pool.query(
+    `UPDATE conversations c SET title=$1
+     FROM projects p WHERE c.id=$2 AND p.id=c.project_id AND p.owner_id=$3
+     RETURNING c.id, c.title, c.created_at`,
+    [parsedBody.data.title, parsedParams.data.conversationId, DEV_OWNER_ID]
+  );
+  if (!rows.length) return reply.notFound("Диалог не найден");
+  return rows[0];
+});
+
+app.delete("/api/v1/conversations/:conversationId", async (request, reply) => {
+  const parsedParams = conversationParam.safeParse(request.params);
+  if (!parsedParams.success) return reply.badRequest(parsedParams.error.message);
+  const { rowCount } = await pool.query(
+    `DELETE FROM conversations c USING projects p
+     WHERE c.id=$1 AND p.id=c.project_id AND p.owner_id=$2`,
+    [parsedParams.data.conversationId, DEV_OWNER_ID]
+  );
+  if (!rowCount) return reply.notFound("Диалог не найден");
+  return reply.code(204).send();
+});
+
 app.get("/api/v1/conversations/:conversationId/messages", async (request, reply) => {
   const parsed = conversationParam.safeParse(request.params);
   if (!parsed.success) return reply.badRequest(parsed.error.message);
@@ -96,13 +140,14 @@ app.get("/api/v1/conversations/:conversationId/messages", async (request, reply)
 app.get("/api/v1/projects/:projectId/memory", async (request, reply) => {
   const parsed = projectParam.safeParse(request.params);
   if (!parsed.success) return reply.badRequest(parsed.error.message);
+  const owned = await pool.query("SELECT id FROM projects WHERE id=$1 AND owner_id=$2", [parsed.data.projectId, DEV_OWNER_ID]);
+  if (!owned.rowCount) return reply.notFound("Проект не найден");
   const { rows } = await pool.query(
     "SELECT id, section, content, updated_at FROM project_memory WHERE project_id=$1 ORDER BY section",
     [parsed.data.projectId]
   );
-  const owned = await pool.query("SELECT id FROM projects WHERE id=$1 AND owner_id=$2", [parsed.data.projectId, DEV_OWNER_ID]);
-  if (!owned.rowCount) return reply.notFound("Проект не найден");
-  return { items: rows };
+  const bySection = new Map(rows.map((row) => [row.section, row]));
+  return { items: ["architecture", "decisions", "knowledge"].map((section) => bySection.get(section) ?? ({ section, content: "", updated_at: null })) };
 });
 
 const memorySchema = z.object({
@@ -152,6 +197,13 @@ app.post("/api/v1/chat", async (request, reply) => {
   );
   const project = projectResult.rows[0];
   if (!project) return reply.notFound("Проект не найден");
+  const memoryResult = await pool.query(
+    "SELECT section, content FROM project_memory WHERE project_id=$1 AND content <> '' ORDER BY section",
+    [projectId]
+  );
+  const memoryText = memoryResult.rows
+    .map((item) => `[${item.section}]\n${item.content}`)
+    .join("\n\n");
 
   let conversationId = parsed.data.conversationId;
   if (conversationId) {
@@ -178,7 +230,7 @@ app.post("/api/v1/chat", async (request, reply) => {
     [conversationId]
   );
   const messages = [
-    { role: "system", content: `Ты — AI Locman, русскоязычный помощник по разработке. Проект: ${project.name}. Инструкции проекта: ${project.instructions || "нет"}. Отвечай конкретно, не утверждай, что выполнил действия с файлами или GitHub, если инструменты реально не запускались.` },
+    { role: "system", content: `Ты — AI Locman, русскоязычный помощник по разработке. Проект: ${project.name}. Инструкции проекта: ${project.instructions || "нет"}.\n\nДОЛГОВРЕМЕННАЯ ПАМЯТЬ ЭТОГО ПРОЕКТА (не смешивай с другими проектами):\n${memoryText || "Пока пуста."}\n\nИспользуй память как контекст и сохраняй согласованность с принятыми решениями. Если пользователь сообщает устойчивое архитектурное решение или важный факт, предложи явно сохранить его в память, но не выдумывай, что сохранил автоматически. Отвечай конкретно, не утверждай, что выполнил действия с файлами или GitHub, если инструменты реально не запускались.` },
     ...history.rows.reverse()
   ];
 
