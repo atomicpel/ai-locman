@@ -47,6 +47,11 @@ private val MainText = Color(0xFFEAF0FA)
 private data class ChatLine(val role: String, val text: String)
 private data class ModelInfo(val id: String, val name: String, val context: Int)
 
+private object BackendSession {
+    var tokenProvider: (() -> String?)? = null
+    fun token(): String? = runCatching { tokenProvider?.invoke() }.getOrNull()?.takeIf { it.isNotBlank() }
+}
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -61,6 +66,7 @@ class MainActivity : ComponentActivity() {
             )
         }.getOrNull()
 
+        BackendSession.tokenProvider = { securePrefs?.getString("backend_session", null) }
         setContent {
             MaterialTheme(
                 colorScheme = darkColorScheme(
@@ -73,13 +79,16 @@ class MainActivity : ComponentActivity() {
                     initialServer = prefs.getString("server", "http://10.0.2.2:8080") ?: "http://10.0.2.2:8080",
                     initialModel = prefs.getString("model", "openai/gpt-4o-mini") ?: "openai/gpt-4o-mini",
                     initialKey = securePrefs?.getString("openrouter_key", "") ?: "",
+                    initialBackendAuthenticated = securePrefs?.getString("backend_session", null) != null,
                     initialLocalMode = prefs.getBoolean("local_mode", true),
                     initialProject = prefs.getString("project", "Мой первый проект") ?: "Мой первый проект",
                     onSaveSettings = { server, model, local, project ->
                         prefs.edit().putString("server", server).putString("model", model)
                             .putBoolean("local_mode", local).putString("project", project).apply()
                     },
-                    onSaveKey = { key -> securePrefs?.edit()?.putString("openrouter_key", key)?.apply() }
+                    onSaveKey = { key -> securePrefs?.edit()?.putString("openrouter_key", key)?.apply() },
+                    onSaveBackendSession = { token -> securePrefs?.edit()?.putString("backend_session", token)?.apply() },
+                    onClearBackendSession = { securePrefs?.edit()?.remove("backend_session")?.apply() }
                 )
             }
         }
@@ -92,10 +101,13 @@ private fun LocmanApp(
     initialServer: String,
     initialModel: String,
     initialKey: String,
+    initialBackendAuthenticated: Boolean,
     initialLocalMode: Boolean,
     initialProject: String,
     onSaveSettings: (String, String, Boolean, String) -> Unit,
-    onSaveKey: (String) -> Unit
+    onSaveKey: (String) -> Unit,
+    onSaveBackendSession: (String) -> Unit,
+    onClearBackendSession: () -> Unit
 ) {
     var screen by remember { mutableStateOf("chat") }
     var navigationExpanded by remember { mutableStateOf(false) }
@@ -107,6 +119,8 @@ private fun LocmanApp(
     var projectName by remember { mutableStateOf(initialProject) }
     var model by remember { mutableStateOf(initialModel) }
     var apiKey by remember { mutableStateOf(initialKey) }
+    var backendAuthenticated by remember { mutableStateOf(initialBackendAuthenticated) }
+    var backendPassword by remember { mutableStateOf("") }
     var prompt by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf("Готов к работе") }
@@ -486,6 +500,35 @@ private fun LocmanApp(
                 modifier = Modifier.fillMaxSize().padding(padding),
                 localMode = localMode, onLocalMode = { localMode = it },
                 apiKey = apiKey, onApiKey = { apiKey = it },
+                backendAuthenticated = backendAuthenticated,
+                backendPassword = backendPassword,
+                onBackendPassword = { backendPassword = it },
+                onLoginBackend = {
+                    runTask {
+                        status = "Выполняю вход на backend…"
+                        val result = api(server, "/api/v1/auth/login", "POST", JSONObject().put("password", backendPassword))
+                        onSaveBackendSession(result.getString("token"))
+                        backendAuthenticated = true
+                        backendPassword = ""
+                        projects = loadBackendProjects(server)
+                        val selected = projects.firstOrNull()
+                        if (selected != null) {
+                            projectId = selected.id
+                            projectName = selected.name
+                            conversations = loadBackendConversations(server, selected.id)
+                            tasks = loadBackendTasks(server, selected.id)
+                        }
+                        status = "Вход выполнен. Сессия сохранена в защищённом хранилище Android."
+                    }
+                },
+                onLogoutBackend = {
+                    runTask {
+                        runCatching { api(server, "/api/v1/auth/logout", "POST") }
+                        onClearBackendSession()
+                        backendAuthenticated = false
+                        status = "Сессия завершена"
+                    }
+                },
                 server = server, onServer = { server = it },
                 project = projectName, onProject = { projectName = it },
                 model = model, models = models,
@@ -970,6 +1013,8 @@ private fun SettingsScreen(
     modifier: Modifier,
     localMode: Boolean, onLocalMode: (Boolean) -> Unit,
     apiKey: String, onApiKey: (String) -> Unit,
+    backendAuthenticated: Boolean, backendPassword: String, onBackendPassword: (String) -> Unit,
+    onLoginBackend: () -> Unit, onLogoutBackend: () -> Unit,
     server: String, onServer: (String) -> Unit,
     project: String, onProject: (String) -> Unit,
     model: String, models: List<ModelInfo>,
@@ -999,6 +1044,22 @@ private fun SettingsScreen(
             } else {
                 OutlinedTextField(value = server, onValueChange = onServer, modifier = Modifier.fillMaxWidth(),
                     label = { Text("Адрес backend") }, singleLine = true)
+                Text(if (backendAuthenticated) "Серверная сессия активна" else "Для доступа к серверу требуется пароль",
+                    color = if (backendAuthenticated) Accent else Muted, style = MaterialTheme.typography.bodySmall)
+                if (backendAuthenticated) {
+                    OutlinedButton(onClick = onLogoutBackend, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
+                        Text("Выйти из backend")
+                    }
+                } else {
+                    OutlinedTextField(
+                        value = backendPassword, onValueChange = onBackendPassword, modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Пароль доступа к backend") }, singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password)
+                    )
+                    Button(onClick = onLoginBackend, enabled = !busy && backendPassword.isNotBlank(),
+                        modifier = Modifier.fillMaxWidth()) { Text("Войти на backend") }
+                }
                 OutlinedTextField(value = project, onValueChange = onProject, modifier = Modifier.fillMaxWidth(),
                     label = { Text("Название проекта") }, singleLine = true)
                 OutlinedButton(onClick = onCreateProject, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
@@ -1165,6 +1226,7 @@ private suspend fun githubApiRaw(server: String, path: String): String = withCon
         connectTimeout = 15_000
         readTimeout = 60_000
         setRequestProperty("Accept", "application/json")
+        BackendSession.token()?.let { setRequestProperty("Authorization", "Bearer $it") }
     }
     try {
         val code = connection.responseCode
@@ -1356,6 +1418,7 @@ private suspend fun api(base: String, path: String, method: String, body: JSONOb
         connectTimeout = 12_000
         readTimeout = 90_000
         setRequestProperty("Accept", "application/json")
+        BackendSession.token()?.let { setRequestProperty("Authorization", "Bearer $it") }
         if (body != null) {
             doOutput = true
             setRequestProperty("Content-Type", "application/json; charset=utf-8")
