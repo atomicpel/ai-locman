@@ -36,3 +36,11 @@ test("malformed requests are rejected before the unavailable-runtime response", 
     (error: unknown) => error instanceof Error && error.name === "ZodError",
   );
 });
+
+test("sandbox controller rejects artifact traversal even while disabled", async () => {
+  const controller = createSandboxController();
+  await assert.rejects(
+    controller.run({ ...validRequest, artifactPaths: ["../outside.txt"] }),
+    (error: unknown) => error instanceof Error && error.name === "ZodError",
+  );
+});
