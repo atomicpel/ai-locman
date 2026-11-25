@@ -15,6 +15,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: Backend dependency audit (diagnostic)
+        working-directory: backend
+        run: |
+          npm install
+          npm audit --json > /tmp/locman-npm-audit.json || true
+          node -e "const a=require('/tmp/locman-npm-audit.json'); console.log(JSON.stringify(a.vulnerabilities ?? {}, null, 2))"
       - name: Backend install and typecheck
         working-directory: backend
         run: npm install && npm run typecheck && npm test
