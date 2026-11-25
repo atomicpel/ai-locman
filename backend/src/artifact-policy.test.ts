@@ -8,7 +8,7 @@ const request = {
   repository: "atomicpel/ai-locman",
   revision: "a".repeat(40),
   profile: "node_build",
-  artifactPaths: ["dist/app.apk", "reports/test-results.xml"]
+  artifactPaths: ["dist/app.apk", "reports/test-results.xml", "logs/a.txt", "logs/b.txt", "logs/c.txt", "logs/d.txt"]
 };
 const artifact = (path: string, bytes = 10) => ({
   path, bytes, sha256: "b".repeat(64), mediaType: "application/octet-stream"
@@ -31,8 +31,12 @@ test("rejects traversal, unrequested paths, and duplicate artifacts", () => {
 test("rejects oversized files, manifests, and aggregate size", () => {
   assert.throws(() => validateArtifactManifest(request, [artifact("dist/app.apk", 100 * 1024 * 1024 + 1)]));
   assert.throws(() => validateArtifactManifest(request, [
-    artifact("dist/app.apk", 300 * 1024 * 1024),
-    artifact("reports/test-results.xml", 250 * 1024 * 1024)
+    artifact("dist/app.apk", 90 * 1024 * 1024),
+    artifact("reports/test-results.xml", 90 * 1024 * 1024),
+    artifact("logs/a.txt", 90 * 1024 * 1024),
+    artifact("logs/b.txt", 90 * 1024 * 1024),
+    artifact("logs/c.txt", 90 * 1024 * 1024),
+    artifact("logs/d.txt", 90 * 1024 * 1024)
   ]), /total size/);
   assert.throws(() => validateArtifactManifest(request, Array.from({ length: 33 }, (_, i) =>
     artifact(i === 0 ? "dist/app.apk" : "reports/test-results.xml")
