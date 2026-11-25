@@ -121,7 +121,7 @@ private fun LocmanApp(
         contentWindowInsets = WindowInsets.safeDrawing,
         topBar = {
             Row(
-                Modifier.fillMaxWidth().background(Navy).padding(horizontal = 22.dp, vertical = 12.dp),
+                Modifier.fillMaxWidth().background(Navy).statusBarsPadding().padding(horizontal = 22.dp, vertical = 12.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Box(
