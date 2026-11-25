@@ -17,7 +17,7 @@ jobs:
           node-version: 22
       - name: Backend install and typecheck
         working-directory: backend
-        run: npm install && npm run typecheck
+        run: npm install && npm run typecheck && npm test
       - name: Agent install and typecheck
         working-directory: agent-core
         run: npm install && npm run typecheck
