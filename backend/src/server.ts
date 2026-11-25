@@ -5,6 +5,7 @@ import helmet from "@fastify/helmet";
 import sensible from "@fastify/sensible";
 import { z } from "zod";
 import { Pool } from "pg";
+import { Queue } from "bullmq";
 
 const app = Fastify({ logger: true, bodyLimit: 1_000_000 });
 await app.register(helmet);
@@ -24,7 +25,36 @@ await pool.query(`
     UNIQUE (project_id, section)
   )
 `);
+await pool.query(`
+  ALTER TABLE agent_tasks
+    ADD COLUMN IF NOT EXISTS conversation_id UUID REFERENCES conversations(id) ON DELETE SET NULL,
+    ADD COLUMN IF NOT EXISTS result TEXT,
+    ADD COLUMN IF NOT EXISTS error TEXT,
+    ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS cancel_requested BOOLEAN NOT NULL DEFAULT FALSE;
+  ALTER TABLE messages
+    ADD COLUMN IF NOT EXISTS task_id UUID REFERENCES agent_tasks(id) ON DELETE SET NULL;
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_task_role
+    ON messages(task_id, role) WHERE task_id IS NOT NULL;
+`);
 
+
+
+const redisUrl = new URL(process.env.REDIS_URL ?? "redis://127.0.0.1:6379");
+const redisConnection = {
+  host: redisUrl.hostname,
+  port: Number(redisUrl.port || 6379),
+  username: redisUrl.username || undefined,
+  password: redisUrl.password || undefined,
+  maxRetriesPerRequest: null,
+  ...(redisUrl.protocol === "rediss:" ? { tls: {} } : {})
+};
+let taskQueue: Queue | null = null;
+function getTaskQueue() {
+  if (!taskQueue) taskQueue = new Queue("ai-locman-tasks", { connection: redisConnection });
+  return taskQueue;
+}
 
 app.get("/health", async () => ({ status: "ok", service: "ai-locman-api", version: "0.2.0" }));
 
@@ -260,6 +290,104 @@ app.post("/api/v1/chat", async (request, reply) => {
     [conversationId, answer, model]
   );
   return { conversationId, model, answer, usage: result.usage ?? null };
+});
+
+
+const taskSchema = z.object({
+  prompt: z.string().trim().min(1).max(20000),
+  model: z.string().min(1).max(200).default(DEFAULT_MODEL),
+  conversationId: z.string().uuid().optional()
+});
+
+app.post("/api/v1/projects/:projectId/tasks", async (request, reply) => {
+  const parsedProject = projectParam.safeParse(request.params);
+  const parsedBody = taskSchema.safeParse(request.body);
+  if (!parsedProject.success) return reply.badRequest(parsedProject.error.message);
+  if (!parsedBody.success) return reply.badRequest(parsedBody.error.message);
+  const owned = await pool.query(
+    "SELECT id FROM projects WHERE id=$1 AND owner_id=$2",
+    [parsedProject.data.projectId, DEV_OWNER_ID]
+  );
+  if (!owned.rowCount) return reply.notFound("Проект не найден");
+  if (parsedBody.data.conversationId) {
+    const conversation = await pool.query(
+      "SELECT id FROM conversations WHERE id=$1 AND project_id=$2",
+      [parsedBody.data.conversationId, parsedProject.data.projectId]
+    );
+    if (!conversation.rowCount) return reply.notFound("Диалог не найден в этом проекте");
+  }
+  const created = await pool.query(
+    `INSERT INTO agent_tasks (project_id, conversation_id, prompt, model, status)
+     VALUES ($1, $2, $3, $4, 'queued')
+     RETURNING id, project_id, conversation_id, prompt, model, status, created_at`,
+    [parsedProject.data.projectId, parsedBody.data.conversationId ?? null, parsedBody.data.prompt, parsedBody.data.model]
+  );
+  const task = created.rows[0];
+  try {
+    await getTaskQueue().add("execute", { taskId: task.id }, {
+      jobId: task.id, attempts: 2, backoff: { type: "exponential", delay: 5000 },
+      removeOnComplete: 500, removeOnFail: 1000
+    });
+  } catch (error) {
+    await pool.query(
+      "UPDATE agent_tasks SET status='failed', error=$2, completed_at=now(), updated_at=now() WHERE id=$1",
+      [task.id, error instanceof Error ? error.message.slice(0, 1000) : "Redis queue unavailable"]
+    );
+    request.log.error({ err: error, taskId: task.id }, "Could not enqueue agent task");
+    return reply.code(503).send({ error: "Очередь задач сейчас недоступна. Попробуй позже.", taskId: task.id });
+  }
+  return reply.code(202).send(task);
+});
+
+app.get("/api/v1/projects/:projectId/tasks", async (request, reply) => {
+  const parsed = projectParam.safeParse(request.params);
+  if (!parsed.success) return reply.badRequest(parsed.error.message);
+  const owned = await pool.query("SELECT id FROM projects WHERE id=$1 AND owner_id=$2", [parsed.data.projectId, DEV_OWNER_ID]);
+  if (!owned.rowCount) return reply.notFound("Проект не найден");
+  const { rows } = await pool.query(
+    `SELECT id, conversation_id, prompt, model, status, result, error, created_at, updated_at, started_at, completed_at
+     FROM agent_tasks WHERE project_id=$1 ORDER BY created_at DESC LIMIT 100`,
+    [parsed.data.projectId]
+  );
+  return { items: rows };
+});
+
+const taskParam = z.object({ taskId: z.string().uuid() });
+app.get("/api/v1/tasks/:taskId", async (request, reply) => {
+  const parsed = taskParam.safeParse(request.params);
+  if (!parsed.success) return reply.badRequest(parsed.error.message);
+  const { rows } = await pool.query(
+    `SELECT t.id, t.project_id, t.conversation_id, t.prompt, t.model, t.status, t.result, t.error,
+            t.created_at, t.updated_at, t.started_at, t.completed_at
+     FROM agent_tasks t JOIN projects p ON p.id=t.project_id
+     WHERE t.id=$1 AND p.owner_id=$2`,
+    [parsed.data.taskId, DEV_OWNER_ID]
+  );
+  if (!rows.length) return reply.notFound("Задача не найдена");
+  return rows[0];
+});
+
+app.post("/api/v1/tasks/:taskId/cancel", async (request, reply) => {
+  const parsed = taskParam.safeParse(request.params);
+  if (!parsed.success) return reply.badRequest(parsed.error.message);
+  const owned = await pool.query(
+    "SELECT t.id, t.status FROM agent_tasks t JOIN projects p ON p.id=t.project_id WHERE t.id=$1 AND p.owner_id=$2",
+    [parsed.data.taskId, DEV_OWNER_ID]
+  );
+  if (!owned.rowCount) return reply.notFound("Задача не найдена");
+  if (["completed", "failed", "cancelled"].includes(owned.rows[0].status)) {
+    return reply.code(409).send({ error: "Задача уже завершена", status: owned.rows[0].status });
+  }
+  await pool.query("UPDATE agent_tasks SET cancel_requested=TRUE, updated_at=now() WHERE id=$1", [parsed.data.taskId]);
+  const job = await getTaskQueue().getJob(parsed.data.taskId);
+  if (job && ["waiting", "delayed", "paused"].includes(await job.getState())) {
+    await job.remove();
+    await pool.query(
+      "UPDATE agent_tasks SET status='cancelled', completed_at=now(), updated_at=now() WHERE id=$1",
+      [parsed.data.taskId]
+    );
+  }
+  return { id: parsed.data.taskId, status: "cancellation_requested" };
 });
 
 const port = Number(process.env.PORT ?? 8080);
