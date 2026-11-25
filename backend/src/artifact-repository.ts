@@ -72,6 +72,26 @@ export class ArtifactRepository {
     }
   }
 
+  async listTaskArtifacts(input: { ownerId: string; taskId: string }): Promise<StoredArtifact[] | null> {
+    const result = await this.pool.query(
+      `SELECT a.id, a.artifact_path AS path, a.byte_size AS bytes, a.sha256,
+              a.media_type AS "mediaType", a.created_at AS "createdAt"
+       FROM task_artifacts a
+       JOIN agent_tasks t ON t.id=a.task_id AND t.project_id=a.project_id
+       JOIN projects p ON p.id=t.project_id
+       WHERE a.task_id=$1 AND p.owner_id=$2
+       ORDER BY a.created_at ASC, a.artifact_path ASC`,
+      [input.taskId, input.ownerId]
+    );
+    const exists = await this.pool.query(
+      `SELECT t.id FROM agent_tasks t JOIN projects p ON p.id=t.project_id
+       WHERE t.id=$1 AND p.owner_id=$2`,
+      [input.taskId, input.ownerId]
+    );
+    if (!exists.rowCount) return null;
+    return result.rows.map((row) => ({ ...row, bytes: Number(row.bytes) }) as StoredArtifact);
+  }
+
   async readTaskArtifact(input: { ownerId: string; taskId: string; artifactId: string }): Promise<{ descriptor: StoredArtifact; data: Buffer } | null> {
     const result = await this.pool.query(
       `SELECT a.id, a.artifact_path AS path, a.byte_size AS bytes, a.sha256,
