@@ -569,12 +569,12 @@ app.get("/api/v1/github/callback", async (request, reply) => {
   }).safeParse(request.query);
   if (!query.success) return reply.badRequest("Некорректные параметры GitHub callback");
   const stateHash = createHash("sha256").update(query.data.state).digest("hex");
+  // Consume the one-time OAuth state atomically to prevent concurrent callback replay.
   const stateResult = await pool.query(
-    "SELECT owner_id FROM github_install_states WHERE state_hash=$1 AND expires_at>now()",
+    "DELETE FROM github_install_states WHERE state_hash=$1 AND expires_at>now() RETURNING owner_id",
     [stateHash]
   );
   if (!stateResult.rowCount) return reply.code(400).send("Ссылка подключения GitHub устарела или уже использована. Вернись в AI Locman и начни подключение заново.");
-  await pool.query("DELETE FROM github_install_states WHERE state_hash=$1", [stateHash]);
   try {
     const installation = await githubAppRequest("/app/installations/" + query.data.installation_id);
     const account = installation.account as Record<string, unknown> | undefined;
