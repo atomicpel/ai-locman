@@ -17,6 +17,7 @@ services:
       - ../backend/db/007_agent_events.sql:/docker-entrypoint-initdb.d/007_agent_events.sql:ro
       - ../backend/db/008_execution_approvals.sql:/docker-entrypoint-initdb.d/008_execution_approvals.sql:ro
       - ../backend/db/009_task_artifacts.sql:/docker-entrypoint-initdb.d/009_task_artifacts.sql:ro
+      - ../backend/db/010_auth_sessions.sql:/docker-entrypoint-initdb.d/010_auth_sessions.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U locman -d ai_locman"]
       interval: 5s
