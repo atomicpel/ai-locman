@@ -346,8 +346,9 @@ private fun LocmanApp(
                                             githubRepositories = loadGitHubRepositories(server)
                                             val bound = projects.firstOrNull { it.id == projectId }?.githubRepository.orEmpty()
                                             selectedGithubRepository = githubRepositories.firstOrNull { it.fullName == bound }
-                                            if (selectedGithubRepository != null) {
-                                                val repo = selectedGithubRepository!!
+                                            val boundRepo = selectedGithubRepository
+                                            if (boundRepo != null) {
+                                                val repo = boundRepo
                                                 githubBranches = loadGitHubBranches(server, repo)
                                                 selectedGithubBranch = repo.defaultBranch
                                                 githubPath = ""

@@ -216,3 +216,31 @@ internal object WorkspaceStore {
         prefs.edit().putString(memoryKey(projectId), json.toString()).apply()
     }
 }
+
+
+internal data class WorkspaceGitHubInstallation(
+    val installationId: String,
+    val accountLogin: String,
+    val accountType: String
+)
+
+internal data class WorkspaceGitHubRepository(
+    val id: String,
+    val fullName: String,
+    val isPrivate: Boolean,
+    val description: String,
+    val defaultBranch: String,
+    val htmlUrl: String
+)
+
+internal data class WorkspaceGitHubBranch(
+    val name: String,
+    val isProtected: Boolean
+)
+
+internal data class WorkspaceGitHubContent(
+    val name: String,
+    val path: String,
+    val type: String,
+    val size: Long
+)
