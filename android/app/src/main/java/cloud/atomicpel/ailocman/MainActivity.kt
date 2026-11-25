@@ -14,10 +14,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
@@ -44,14 +46,15 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 private fun LocmanHome(initialServer: String, onSaveServer: (String) -> Unit) {
+    var localMode by remember { mutableStateOf(true) }
     var server by remember { mutableStateOf(initialServer) }
     var projectName by remember { mutableStateOf("Мой первый проект") }
-    var projectId by remember { mutableStateOf("") }
-    var model by remember { mutableStateOf("openrouter/auto") }
+    var model by remember { mutableStateOf("openai/gpt-4o-mini") }
+    var apiKey by remember { mutableStateOf("") }
     var prompt by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
-    var status by remember { mutableStateOf("Укажи адрес backend и создай проект") }
-    val lines = remember { mutableStateListOf(ChatLine("assistant", "Привет! Я AI Locman. Создай проект, выбери модель и поставь мне задачу.")) }
+    var status by remember { mutableStateOf("Локальный тест: введи ключ OpenRouter и отправь сообщение") }
+    val lines = remember { mutableStateListOf(ChatLine("assistant", "Привет! Я AI Locman. Сейчас включён локальный тестовый режим: запросы идут напрямую в OpenRouter, backend не требуется.")) }
     val scope = rememberCoroutineScope()
 
     fun runRequest(block: suspend () -> Unit) {
@@ -72,25 +75,34 @@ private fun LocmanHome(initialServer: String, onSaveServer: (String) -> Unit) {
             }
         }
     ) { padding ->
-        Column(Modifier.fillMaxSize().padding(padding).padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Column(Modifier.fillMaxSize().padding(padding).padding(14.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
             Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
                 Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Подключение", fontWeight = FontWeight.SemiBold)
-                    OutlinedTextField(value = server, onValueChange = { server = it }, modifier = Modifier.fillMaxWidth(), singleLine = true, label = { Text("Адрес backend") })
-                    OutlinedTextField(value = projectName, onValueChange = { projectName = it }, modifier = Modifier.fillMaxWidth(), singleLine = true, label = { Text("Название проекта") })
-                    OutlinedTextField(value = model, onValueChange = { model = it }, modifier = Modifier.fillMaxWidth(), singleLine = true, label = { Text("Модель OpenRouter") })
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("Режим работы", fontWeight = FontWeight.SemiBold)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(selected = localMode, onClick = { localMode = true; status = "Локальный тест: backend не требуется" }, label = { Text("Local AI Test") })
+                        FilterChip(selected = !localMode, onClick = { localMode = false; status = "Backend mode: укажи адрес сервера" }, label = { Text("Backend") })
+                    }
+                    if (localMode) {
+                        OutlinedTextField(value = apiKey, onValueChange = { apiKey = it.trim() }, modifier = Modifier.fillMaxWidth(), singleLine = true, label = { Text("OpenRouter API key") }, visualTransformation = PasswordVisualTransformation())
+                        Text("Ключ хранится только в памяти приложения и исчезнет после его закрытия. Используй отдельный тестовый ключ с небольшим лимитом.", color = Color(0xFFFFD18A), style = MaterialTheme.typography.bodySmall)
+                    } else {
+                        OutlinedTextField(value = server, onValueChange = { server = it }, modifier = Modifier.fillMaxWidth(), singleLine = true, label = { Text("Адрес backend") })
+                    }
+                    OutlinedTextField(value = projectName, onValueChange = { projectName = it }, modifier = Modifier.fillMaxWidth(), singleLine = true, label = { Text("Название проекта (локально)") })
+                    OutlinedTextField(value = model, onValueChange = { model = it }, modifier = Modifier.fillMaxWidth(), singleLine = true, label = { Text("Модель") })
+                    if (!localMode) {
                         Button(enabled = !busy, onClick = {
                             onSaveServer(server.trim().trimEnd('/'))
                             runRequest {
                                 val json = JSONObject().put("name", projectName).put("description", "Проект AI Locman")
                                 val result = api(server, "/api/v1/projects", "POST", json)
                                 projectId = result.getString("id")
-                                status = "Проект создан и подключён"
-                                lines.add(ChatLine("assistant", "Проект «$projectName» готов. Теперь можно отправить задачу."))
+                                status = "Проект создан на backend"
                             }
-                        }) { Text(if (busy) "Подожди…" else "Создать проект") }
-                        if (projectId.isNotBlank()) Text("Подключён", color = Color(0xFF83D6C5), style = MaterialTheme.typography.labelMedium)
+                        }) { Text("Создать проект на сервере") }
+                    } else {
+                        Text("Проект тестовой сессии: $projectName", color = Color(0xFF83D6C5), style = MaterialTheme.typography.labelMedium)
                     }
                 }
             }
@@ -111,23 +123,59 @@ private fun LocmanHome(initialServer: String, onSaveServer: (String) -> Unit) {
             }
             OutlinedTextField(value = prompt, onValueChange = { prompt = it }, modifier = Modifier.fillMaxWidth(), placeholder = { Text("Опиши, что нужно сделать…") }, minLines = 2, maxLines = 5)
             Button(
-                enabled = !busy && projectId.isNotBlank() && prompt.isNotBlank(),
+                enabled = !busy && prompt.isNotBlank() && (if (localMode) apiKey.startsWith("sk-or-") else projectId.isNotBlank()),
                 onClick = {
                     val text = prompt.trim()
                     prompt = ""
                     lines.add(ChatLine("user", text))
+                    val history = lines.map { it.role to it.text }
                     runRequest {
-                        status = "Агент обращается к модели…"
-                        val body = JSONObject().put("projectId", projectId).put("model", model.trim()).put("message", text)
-                        val result = api(server, "/api/v1/chat", "POST", body)
-                        lines.add(ChatLine("assistant", result.optString("answer", "Пустой ответ модели")))
-                        status = "Ответ получен · ${result.optString("model", model)}"
+                        status = if (localMode) "Запрос напрямую в OpenRouter…" else "Агент обращается к backend…"
+                        val answer = if (localMode) {
+                            openRouterChat(apiKey, model.trim(), history)
+                        } else {
+                            val body = JSONObject().put("projectId", projectId).put("model", model.trim()).put("message", text)
+                            api(server, "/api/v1/chat", "POST", body).optString("answer", "Пустой ответ модели")
+                        }
+                        lines.add(ChatLine("assistant", answer))
+                        status = "Ответ получен · $model"
                     }
                 }, modifier = Modifier.fillMaxWidth()
             ) { Text(if (busy) "Выполняется…" else "Отправить") }
         }
     }
 }
+
+private suspend fun openRouterChat(key: String, model: String, history: List<Pair<String, String>>): String = withContext(Dispatchers.IO) {
+    require(key.startsWith("sk-or-")) { "Введи действительный ключ OpenRouter (обычно начинается с sk-or-)" }
+    val messages = JSONArray()
+    history.forEach { (role, content) -> messages.put(JSONObject().put("role", role).put("content", content)) }
+    val body = JSONObject().put("model", model).put("messages", messages)
+    val connection = (URL("https://openrouter.ai/api/v1/chat/completions").openConnection() as HttpURLConnection).apply {
+        requestMethod = "POST"
+        connectTimeout = 15_000
+        readTimeout = 120_000
+        doOutput = true
+        setRequestProperty("Authorization", "Bearer $key")
+        setRequestProperty("Content-Type", "application/json; charset=utf-8")
+        setRequestProperty("Accept", "application/json")
+    }
+    try {
+        connection.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+        val code = connection.responseCode
+        val stream = if (code in 200..299) connection.inputStream else connection.errorStream
+        val raw = stream?.bufferedReader()?.use { it.readText() } ?: "{}"
+        val json = JSONObject(raw)
+        if (code !in 200..299) {
+            val detail = json.optJSONObject("error")?.optString("message")
+            throw IllegalStateException(detail?.takeIf { it.isNotBlank() } ?: "OpenRouter вернул HTTP $code")
+        }
+        json.optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("message")?.optString("content")
+            ?.takeIf { it.isNotBlank() } ?: "Модель вернула пустой ответ"
+    } finally { connection.disconnect() }
+}
+
+private var projectId: String = ""
 
 private suspend fun api(base: String, path: String, method: String, body: JSONObject? = null): JSONObject = withContext(Dispatchers.IO) {
     val root = base.trim().trimEnd('/')
