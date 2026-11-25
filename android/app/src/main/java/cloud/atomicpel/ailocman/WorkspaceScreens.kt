@@ -1,6 +1,7 @@
 package cloud.atomicpel.ailocman
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -269,6 +270,11 @@ internal fun GitHubScreen(
     files: List<WorkspaceGitHubContent>,
     selectedFilePath: String,
     selectedFileContent: String,
+    commits: List<WorkspaceGitHubCommit>,
+    pulls: List<WorkspaceGitHubPull>,
+    workflowRuns: List<WorkspaceGitHubRun>,
+    selectedSection: String,
+    diffText: String,
     busy: Boolean,
     onRefresh: () -> Unit,
     onSelectRepository: (WorkspaceGitHubRepository) -> Unit,
@@ -277,10 +283,14 @@ internal fun GitHubScreen(
     onNavigateDirectory: (String) -> Unit,
     onOpenFile: (WorkspaceGitHubContent) -> Unit,
     onCloseFile: () -> Unit,
-    onUpPath: () -> Unit
+    onUpPath: () -> Unit,
+    onSectionChange: (String) -> Unit,
+    onCompare: (String, String) -> Unit
 ) {
     val uriHandler = LocalUriHandler.current
     var branchMenu by remember { mutableStateOf(false) }
+    var diffBase by remember(selectedRepository?.id, branches) { mutableStateOf(selectedRepository?.defaultBranch.orEmpty()) }
+    var diffHead by remember(selectedRepository?.id, branches) { mutableStateOf(branches.firstOrNull { it.name != selectedRepository?.defaultBranch }?.name ?: selectedRepository?.defaultBranch.orEmpty()) }
     Column(Modifier.fillMaxSize().padding(horizontal = 18.dp, vertical = 12.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
@@ -373,34 +383,118 @@ internal fun GitHubScreen(
                 }
             }
             Spacer(Modifier.height(6.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(currentPath.ifBlank { "/" }, modifier = Modifier.weight(1f),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
-                if (currentPath.isNotBlank()) TextButton(onClick = onUpPath) { Text("Вверх") }
-            }
-            if (selectedFilePath.isNotBlank()) {
-                TextButton(onClick = onCloseFile) { Text("← К списку файлов") }
-                Card(Modifier.fillMaxWidth().weight(1f),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
-                    Text(selectedFileContent, modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(12.dp),
-                        style = MaterialTheme.typography.bodySmall)
+            Row(
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(2.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                listOf("files" to "Файлы", "commits" to "Коммиты", "pulls" to "Pull requests", "actions" to "Сборки", "diff" to "Diff").forEach { (key, label) ->
+                    TextButton(onClick = { onSectionChange(key) }) {
+                        Text(label, color = if (selectedSection == key) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                 }
-            } else {
-                LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    items(files, key = { it.path }) { item ->
-                        Row(
-                            Modifier.fillMaxWidth().clickable {
-                                if (item.type == "dir") onNavigateDirectory(item.path) else onOpenFile(item)
-                            }.padding(vertical = 8.dp, horizontal = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(if (item.type == "dir") "📁" else "📄")
-                            Spacer(Modifier.width(10.dp))
-                            Text(item.name, modifier = Modifier.weight(1f), maxLines = 1)
-                            if (item.size > 0) Text("\${item.size} B", style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            when (selectedSection) {
+                "files" -> {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(currentPath.ifBlank { "/" }, modifier = Modifier.weight(1f),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+                        if (currentPath.isNotBlank()) TextButton(onClick = onUpPath) { Text("Вверх") }
+                    }
+                    if (selectedFilePath.isNotBlank()) {
+                        TextButton(onClick = onCloseFile) { Text("← К списку файлов") }
+                        Card(Modifier.fillMaxWidth().weight(1f),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+                            Text(selectedFileContent, modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(12.dp),
+                                style = MaterialTheme.typography.bodySmall)
                         }
-                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    } else {
+                        LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            items(files, key = { it.path }) { item ->
+                                Row(
+                                    Modifier.fillMaxWidth().clickable {
+                                        if (item.type == "dir") onNavigateDirectory(item.path) else onOpenFile(item)
+                                    }.padding(vertical = 8.dp, horizontal = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(if (item.type == "dir") "📁" else "📄")
+                                    Spacer(Modifier.width(10.dp))
+                                    Text(item.name, modifier = Modifier.weight(1f), maxLines = 1)
+                                    if (item.size > 0) Text("${item.size} B", style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                            }
+                        }
+                    }
+                }
+                "commits" -> {
+                    if (commits.isEmpty()) Text("Коммиты не найдены.")
+                    else LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        items(commits, key = { it.sha }) { commit ->
+                            Card(Modifier.fillMaxWidth().clickable { if (commit.htmlUrl.isNotBlank()) uriHandler.openUri(commit.htmlUrl) },
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+                                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Text(commit.message, fontWeight = FontWeight.SemiBold, maxLines = 3)
+                                    Text(commit.sha.take(8) + " · " + commit.author, style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Text(commit.createdAt, style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                            }
+                        }
+                    }
+                }
+                "pulls" -> {
+                    if (pulls.isEmpty()) Text("Pull requests не найдены.")
+                    else LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        items(pulls, key = { it.id }) { pull ->
+                            Card(Modifier.fillMaxWidth().clickable { if (pull.htmlUrl.isNotBlank()) uriHandler.openUri(pull.htmlUrl) },
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+                                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Text("#${pull.number} · ${pull.title}", fontWeight = FontWeight.SemiBold, maxLines = 3)
+                                    Text("${pull.state.uppercase()} · ${pull.head} → ${pull.base}", style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Text(pull.author, style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                            }
+                        }
+                    }
+                }
+                "actions" -> {
+                    if (workflowRuns.isEmpty()) Text("Запуски GitHub Actions не найдены.")
+                    else LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        items(workflowRuns, key = { it.id }) { run ->
+                            Card(Modifier.fillMaxWidth().clickable { if (run.htmlUrl.isNotBlank()) uriHandler.openUri(run.htmlUrl) },
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+                                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Text(run.name, fontWeight = FontWeight.SemiBold)
+                                    Text("${run.status} · ${run.conclusion.ifBlank { "без результата" }}",
+                                        color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelSmall)
+                                    Text("${run.branch} · ${run.createdAt}", color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        style = MaterialTheme.typography.labelSmall)
+                                }
+                            }
+                        }
+                    }
+                }
+                "diff" -> {
+                    OutlinedTextField(value = diffBase, onValueChange = { diffBase = it }, modifier = Modifier.fillMaxWidth(),
+                        singleLine = true, label = { Text("Базовая ветка") })
+                    OutlinedTextField(value = diffHead, onValueChange = { diffHead = it }, modifier = Modifier.fillMaxWidth(),
+                        singleLine = true, label = { Text("Сравниваемая ветка") })
+                    Button(onClick = { onCompare(diffBase.trim(), diffHead.trim()) },
+                        enabled = diffBase.isNotBlank() && diffHead.isNotBlank() && !busy, modifier = Modifier.fillMaxWidth()) {
+                        Text("Сравнить ветки")
+                    }
+                    Card(Modifier.fillMaxWidth().weight(1f),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+                        Text(
+                            diffText.ifBlank { "Здесь появится diff выбранных веток." },
+                            modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).horizontalScroll(rememberScrollState()).padding(10.dp),
+                            style = MaterialTheme.typography.bodySmall
+                        )
                     }
                 }
             }

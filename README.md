@@ -10,7 +10,7 @@
 - История диалогов восстанавливается после перезапуска; в Backend-режиме хранится в PostgreSQL, в Local AI — в локальном хранилище приложения.
 - Память проекта разделена на архитектуру, решения и знания; она подмешивается в контекст модели и не смешивается между проектами.
 - Каталог OpenRouter с поиском и настройкой модели отдельно для каждого проекта.
-- GitHub App installation integration with repository picker, per-project repository binding, branch selector and text-file browser (read-only).
+- GitHub App installation integration with per-project repository binding, branch/file browser, commit and PR views, Actions runs, and branch diff (read-only).
 - Потоковая выдача токенов в Local AI режиме.
 - TypeScript/Fastify API, PostgreSQL и Redis/BullMQ.
 - Отдельный фоновый worker для задач Backend-режима. Сейчас это надёжная очередь LLM-запросов с состояниями и отменой, но ещё не автономный агент, который изменяет репозитории.

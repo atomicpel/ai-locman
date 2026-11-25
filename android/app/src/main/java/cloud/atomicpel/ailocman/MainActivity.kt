@@ -125,6 +125,11 @@ private fun LocmanApp(
     var githubFiles by remember { mutableStateOf<List<WorkspaceGitHubContent>>(emptyList()) }
     var githubSelectedFilePath by remember { mutableStateOf("") }
     var githubFileContent by remember { mutableStateOf("") }
+    var githubSection by remember { mutableStateOf("files") }
+    var githubCommits by remember { mutableStateOf<List<WorkspaceGitHubCommit>>(emptyList()) }
+    var githubPulls by remember { mutableStateOf<List<WorkspaceGitHubPull>>(emptyList()) }
+    var githubWorkflowRuns by remember { mutableStateOf<List<WorkspaceGitHubRun>>(emptyList()) }
+    var githubDiff by remember { mutableStateOf("") }
     val initialProjects = remember { WorkspaceStore.ensureProjects(preferences) }
     var projects by remember { mutableStateOf(initialProjects) }
     var projectId by remember {
@@ -665,6 +670,11 @@ private fun LocmanApp(
                 files = githubFiles,
                 selectedFilePath = githubSelectedFilePath,
                 selectedFileContent = githubFileContent,
+                commits = githubCommits,
+                pulls = githubPulls,
+                workflowRuns = githubWorkflowRuns,
+                selectedSection = githubSection,
+                diffText = githubDiff,
                 busy = busy,
                 onRefresh = {
                     runTask {
@@ -692,6 +702,11 @@ private fun LocmanApp(
                 onSelectRepository = { repo ->
                     runTask {
                         selectedGithubRepository = repo
+                        githubSection = "files"
+                        githubCommits = emptyList()
+                        githubPulls = emptyList()
+                        githubWorkflowRuns = emptyList()
+                        githubDiff = ""
                         githubPath = ""
                         githubSelectedFilePath = ""
                         githubFileContent = ""
@@ -757,6 +772,24 @@ private fun LocmanApp(
                     if (repo != null) runTask {
                         githubPath = githubPath.substringBeforeLast("/", "")
                         githubFiles = loadGitHubContents(server, repo, githubPath, selectedGithubBranch)
+                    }
+                },
+                onSectionChange = { section ->
+                    githubSection = section
+                    val repo = selectedGithubRepository
+                    if (repo != null) runTask {
+                        when (section) {
+                            "commits" -> githubCommits = loadGitHubCommits(server, repo)
+                            "pulls" -> githubPulls = loadGitHubPulls(server, repo)
+                            "actions" -> githubWorkflowRuns = loadGitHubWorkflowRuns(server, repo)
+                            "diff" -> githubDiff = ""
+                        }
+                    }
+                },
+                onCompare = { base, head ->
+                    val repo = selectedGithubRepository
+                    if (repo != null) runTask {
+                        githubDiff = loadGitHubDiff(server, repo, base, head)
                     }
                 }
             )
@@ -1040,6 +1073,80 @@ private suspend fun loadBackendTask(server: String, taskId: String): WorkspaceTa
     workspaceTaskFromJson(api(server, "/api/v1/tasks/$taskId", "GET"))
 
 
+
+private suspend fun loadGitHubCommits(server: String, repo: WorkspaceGitHubRepository): List<WorkspaceGitHubCommit> {
+    val owner = repo.fullName.substringBefore("/")
+    val name = repo.fullName.substringAfter("/")
+    val array = JSONArray(githubApiRaw(server, "/api/v1/github/repositories/$owner/$name/commits"))
+    return (0 until array.length()).mapNotNull { i ->
+        array.optJSONObject(i)?.let { item ->
+            val commit = item.optJSONObject("commit")
+            val author = commit?.optJSONObject("author")
+            val sha = item.optString("sha")
+            if (sha.isBlank()) null else WorkspaceGitHubCommit(
+                sha = sha,
+                message = commit?.optString("message").orEmpty().lineSequence().firstOrNull().orEmpty(),
+                author = author?.optString("name").orEmpty(),
+                createdAt = author?.optString("date").orEmpty(),
+                htmlUrl = item.optString("html_url")
+            )
+        }
+    }
+}
+
+private suspend fun loadGitHubPulls(server: String, repo: WorkspaceGitHubRepository): List<WorkspaceGitHubPull> {
+    val owner = repo.fullName.substringBefore("/")
+    val name = repo.fullName.substringAfter("/")
+    val array = JSONArray(githubApiRaw(server, "/api/v1/github/repositories/$owner/$name/pulls"))
+    return (0 until array.length()).mapNotNull { i ->
+        array.optJSONObject(i)?.let { item ->
+            val number = item.optInt("number")
+            if (number <= 0) null else WorkspaceGitHubPull(
+                id = item.opt("id")?.toString() ?: number.toString(),
+                number = number,
+                title = item.optString("title"),
+                state = item.optString("state"),
+                head = item.optJSONObject("head")?.optString("ref").orEmpty(),
+                base = item.optJSONObject("base")?.optString("ref").orEmpty(),
+                author = item.optJSONObject("user")?.optString("login").orEmpty(),
+                htmlUrl = item.optString("html_url")
+            )
+        }
+    }
+}
+
+private suspend fun loadGitHubWorkflowRuns(server: String, repo: WorkspaceGitHubRepository): List<WorkspaceGitHubRun> {
+    val owner = repo.fullName.substringBefore("/")
+    val name = repo.fullName.substringAfter("/")
+    val json = JSONObject(githubApiRaw(server, "/api/v1/github/repositories/$owner/$name/actions"))
+    val array = json.optJSONArray("workflow_runs") ?: JSONArray()
+    return (0 until array.length()).mapNotNull { i ->
+        array.optJSONObject(i)?.let { item ->
+            val id = item.opt("id")?.toString().orEmpty()
+            if (id.isBlank()) null else WorkspaceGitHubRun(
+                id = id,
+                name = item.optString("name").ifBlank { item.optString("display_title") },
+                status = item.optString("status"),
+                conclusion = item.optString("conclusion"),
+                branch = item.optString("head_branch"),
+                createdAt = item.optString("created_at"),
+                htmlUrl = item.optString("html_url")
+            )
+        }
+    }
+}
+
+private suspend fun loadGitHubDiff(
+    server: String, repo: WorkspaceGitHubRepository, base: String, head: String
+): String {
+    require(base.isNotBlank() && head.isNotBlank()) { "Выбери обе ветки для сравнения" }
+    val owner = repo.fullName.substringBefore("/")
+    val name = repo.fullName.substringAfter("/")
+    val query = "?base=" + java.net.URLEncoder.encode(base, "UTF-8") +
+        "&head=" + java.net.URLEncoder.encode(head, "UTF-8")
+    return githubApiRaw(server, "/api/v1/github/repositories/$owner/$name/compare$query")
+}
+
 private fun githubContentsRoute(repo: WorkspaceGitHubRepository, path: String, branch: String): String {
     val owner = repo.fullName.substringBefore("/")
     val name = repo.fullName.substringAfter("/")
@@ -1051,7 +1158,7 @@ private fun githubContentsRoute(repo: WorkspaceGitHubRepository, path: String, b
 }
 
 private suspend fun githubApiRaw(server: String, path: String): String = withContext(Dispatchers.IO) {
-    val root = server.trim().trimEnd("/")
+    val root = server.trim().trimEnd('/')
     require(root.startsWith("http://") || root.startsWith("https://")) { "Адрес backend должен начинаться с http:// или https://" }
     val connection = (URL(root + path).openConnection() as HttpURLConnection).apply {
         requestMethod = "GET"

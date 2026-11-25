@@ -244,3 +244,32 @@ internal data class WorkspaceGitHubContent(
     val type: String,
     val size: Long
 )
+
+internal data class WorkspaceGitHubCommit(
+    val sha: String,
+    val message: String,
+    val author: String,
+    val createdAt: String,
+    val htmlUrl: String
+)
+
+internal data class WorkspaceGitHubPull(
+    val id: String,
+    val number: Int,
+    val title: String,
+    val state: String,
+    val head: String,
+    val base: String,
+    val author: String,
+    val htmlUrl: String
+)
+
+internal data class WorkspaceGitHubRun(
+    val id: String,
+    val name: String,
+    val status: String,
+    val conclusion: String,
+    val branch: String,
+    val createdAt: String,
+    val htmlUrl: String
+)
