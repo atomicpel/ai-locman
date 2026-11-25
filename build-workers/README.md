@@ -10,7 +10,10 @@
 - Подтверждения команд хранятся как одноразовые, ограниченные по времени challenge и привязаны к задаче, проекту, репозиторию, commit, argv и SHA-256 diff. Они пока не включают исполнение.
 - Метаданные артефактов проходят отдельную проверку пути, hash, количества и размера.
 - Добавлен локальный content-addressed storage primitive: запись по task UUID + SHA-256, проверка размера/hash до записи и при чтении, права каталогов/файлов ограничены, имена sandbox-файлов не используются как disk paths.
-- Хранилище пока не подключено к API upload/download, авторизации владельца задачи или retention policy; не считать это готовым пользовательским artifact service.
+- Metadata migration `009_task_artifacts.sql` создаёт таблицу с FK на task/project, уникальностью пути в задаче и индексом для выборки.
+- API предоставляет owner-scoped listing и binary download (`application/octet-stream`, `private, no-store`); backend и worker используют отдельный persistent Docker volume.
+- Репозиторий артефактов проверяет владельца задачи до записи байтов и повторно под блокировкой транзакции; скачивание повторно проверяет owner и SHA-256.
+- Важно: ingestion endpoint из sandbox/runner и retention/garbage collection ещё не реализованы; execution runtime остаётся отключённым.
 
 ## Production требования
 
