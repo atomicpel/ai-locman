@@ -22,6 +22,13 @@ export class ArtifactRepository {
   }): Promise<StoredArtifact[]> {
     const validated = validateArtifactManifest(input.executionRequest, input.manifest);
     if (validated.artifacts.length !== input.files.size) throw new Error("Artifact payload and manifest counts differ");
+    const preflight = await this.pool.query(
+      `SELECT t.id FROM agent_tasks t
+       JOIN projects p ON p.id=t.project_id
+       WHERE t.id=$1 AND t.project_id=$2 AND p.owner_id=$3`,
+      [input.taskId, input.projectId, input.ownerId]
+    );
+    if (!preflight.rowCount) throw new Error("Task not found or access denied");
     for (const item of validated.artifacts) {
       const bytes = input.files.get(item.path);
       if (!bytes) throw new Error("Artifact payload is missing: " + item.path);
