@@ -131,3 +131,14 @@ export async function recordLoginFailure(db: AuthDb, ipAddress: string): Promise
 export async function clearLoginFailures(db: AuthDb, ipAddress: string): Promise<void> {
   await db.query("DELETE FROM auth_login_attempts WHERE ip_address = $1", [ipAddress]);
 }
+
+export async function revokeAllAuthSessions(db: AuthDb, ownerId: string): Promise<number> {
+  if (!ownerId.trim() || ownerId.length > 200) throw new Error("Invalid session owner");
+  const result = await db.query(
+    `UPDATE auth_sessions SET revoked_at = now()
+      WHERE owner_id = $1 AND revoked_at IS NULL AND expires_at > now()
+      RETURNING id`,
+    [ownerId]
+  );
+  return result.rowCount ?? 0;
+}
