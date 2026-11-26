@@ -20,10 +20,12 @@ The Compose backend is intentionally bound to loopback and runs in development m
 - `POST /api/v1/auth/login` with JSON `{"password":"..."}` exchanges the configured password for an opaque bearer token.
 - `GET /api/v1/auth/me` returns the authenticated owner and session expiry.
 - `POST /api/v1/auth/logout` revokes the current token.
+- `POST /api/v1/auth/logout-all` revokes every active session belonging to the configured owner; use it after losing a device.
 - All other `/api/v1` routes require `Authorization: Bearer <token>`, except the one-time GitHub App installation callback.
 - Sessions expire after 30 days. Only SHA-256 token digests are stored in PostgreSQL.
 - Five failed password attempts from the same observed client IP trigger a 15-minute lockout. The counter resets after a 15-minute inactivity window and clears after a successful login.
 - Android stores the bearer token in AndroidX EncryptedSharedPreferences backed by Android Keystore.
+- The Settings screen exposes both current-device logout and owner-wide logout; owner-wide logout clears the token on the current device after the server confirms revocation.
 
 The GitHub App installation callback is exempt from bearer authentication because GitHub opens it in a browser. It can only complete a pending installation whose high-entropy, short-lived state was created by an authenticated session.
 
