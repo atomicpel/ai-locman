@@ -220,6 +220,21 @@ private fun LocmanApp(
     LaunchedEffect(localMode) {
         if (!localMode) {
             runTask {
+                if (!backendAuthenticated) {
+                    status = "Сначала войди в backend в настройках"
+                    return@runTask
+                }
+                try {
+                    api(server, "/api/v1/auth/me", "GET")
+                } catch (error: BackendApiException) {
+                    if (error.statusCode == 401) {
+                        onClearBackendSession()
+                        backendAuthenticated = false
+                        status = "Сессия истекла. Войди в backend повторно в настройках."
+                        return@runTask
+                    }
+                    throw error
+                }
                 projects = loadBackendProjects(server)
                 if (projects.isEmpty()) {
                     projectId = ""
@@ -1410,6 +1425,8 @@ private suspend fun openRouterChat(
     } finally { connection.disconnect() }
 }
 
+private class BackendApiException(val statusCode: Int, message: String) : IllegalStateException(message)
+
 private suspend fun api(base: String, path: String, method: String, body: JSONObject? = null): JSONObject = withContext(Dispatchers.IO) {
     val root = base.trim().trimEnd('/')
     require(root.startsWith("http://") || root.startsWith("https://")) { "Адрес должен начинаться с http:// или https://" }
@@ -1431,7 +1448,7 @@ private suspend fun api(base: String, path: String, method: String, body: JSONOb
         if (code == 204) return@withContext JSONObject()
         val raw = stream?.bufferedReader()?.use { it.readText() } ?: "{}"
         val json = JSONObject(raw)
-        if (code !in 200..299) throw IllegalStateException(json.optString("error", "HTTP $code"))
+        if (code !in 200..299) throw BackendApiException(code, json.optString("error", "HTTP $code"))
         json
     } finally { connection.disconnect() }
 }
