@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
   clearLoginFailures, createAuthSession, getLoginThrottle, recordLoginFailure,
-  resolveAuthSession, revokeAuthSession, verifyAccessPassword, pruneExpiredAuthSessions
+  resolveAuthSession, revokeAuthSession, revokeAllAuthSessions, verifyAccessPassword, pruneExpiredAuthSessions
 } from "./auth-session.js";
 
 function fakeDb() {
@@ -98,4 +98,19 @@ test("persists per-IP failed-login counters and applies a bounded lockout", asyn
   assert.ok(throttle.lockedUntil);
   await clearLoginFailures(db as never, "127.0.0.1");
   assert.match(calls[2].sql, /DELETE FROM auth_login_attempts/);
+});
+
+test("revokes every active session belonging to one owner", async () => {
+  const calls: Array<{ sql: string; values: unknown[] }> = [];
+  const db = {
+    async query(sql: string, values: unknown[] = []) {
+      calls.push({ sql, values });
+      return { rows: [{ id: "session-a" }, { id: "session-b" }], rowCount: 2 };
+    }
+  };
+  assert.equal(await revokeAllAuthSessions(db as never, "owner-a"), 2);
+  assert.equal(calls[0].values[0], "owner-a");
+  assert.match(calls[0].sql, /owner_id = \$1/);
+  assert.match(calls[0].sql, /revoked_at IS NULL/);
+  await assert.rejects(() => revokeAllAuthSessions(db as never, " "), /Invalid session owner/);
 });
