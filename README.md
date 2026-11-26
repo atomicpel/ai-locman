@@ -15,7 +15,7 @@
 - TypeScript/Fastify API, PostgreSQL и Redis/BullMQ.
 - Фоновый worker для задач Backend-режима: планирование, read-only исследование репозитория, журнал событий, независимое ревью и отмена.
 - Базовая политика исполнения команд, fail-closed sandbox controller и хранилище одноразовых подтверждений, привязанных к commit и diff. Реального sandbox runtime пока нет, поэтому выполнение команд выключено.
-- Серверная парольная аутентификация для одного self-hosted владельца: opaque bearer-сессии, хранение только SHA-256-хэшей, срок действия 30 дней, отзыв при выходе. Android хранит сессию в EncryptedSharedPreferences и передаёт её API.
+- Серверная парольная аутентификация для одного self-hosted владельца: opaque bearer-сессии, хранение только SHA-256-хэшей, срок действия 30 дней, отзыв текущей или всех сессий владельца. Android хранит сессию в EncryptedSharedPreferences и передаёт её API.
 - Content-addressed хранилище артефактов с SHA-256-проверкой, лимитами и owner-scoped API списка/скачивания. Приём артефактов от runner и retention/GC ещё не реализованы.
 - Docker Compose для локальной инфраструктуры и GitHub Actions для проверок backend и сборки Android.
 
