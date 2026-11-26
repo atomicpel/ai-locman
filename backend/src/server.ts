@@ -14,7 +14,7 @@ import { ArtifactRepository } from "./artifact-repository.js";
 import { LocalArtifactStore } from "./artifact-store.js";
 import {
   clearLoginFailures, createAuthSession, ensureAuthSessionSchema, getLoginThrottle,
-  pruneExpiredAuthSessions, recordLoginFailure, resolveAuthSession, revokeAuthSession, verifyAccessPassword
+  pruneExpiredAuthSessions, recordLoginFailure, resolveAuthSession, revokeAuthSession, revokeAllAuthSessions, verifyAccessPassword
 } from "./auth-session.js";
 
 assertDevelopmentOnlyRuntime(process.env.NODE_ENV);
@@ -163,6 +163,11 @@ app.post("/api/v1/auth/logout", async (request, reply) => {
   const session = requestSessions.get(request)!;
   await revokeAuthSession(pool, session.token);
   return reply.code(204).send();
+});
+
+app.post("/api/v1/auth/logout-all", async (request, reply) => {
+  const revokedSessions = await revokeAllAuthSessions(pool, ownerId(request));
+  return reply.send({ revokedSessions });
 });
 
 // Private project API; the global preHandler requires a valid bearer session.
