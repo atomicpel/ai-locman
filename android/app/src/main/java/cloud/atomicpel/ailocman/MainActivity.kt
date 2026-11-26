@@ -563,6 +563,14 @@ private fun LocmanApp(
                         status = "Сессия завершена"
                     }
                 },
+                onLogoutAllBackend = {
+                    runTask {
+                        api(server, "/api/v1/auth/logout-all", "POST")
+                        onClearBackendSession()
+                        backendAuthenticated = false
+                        status = "Все серверные сессии отозваны. Выполнен выход на всех устройствах."
+                    }
+                },
                 server = server, onServer = { server = it },
                 project = projectName, onProject = { projectName = it },
                 model = model, models = models,
@@ -1048,7 +1056,7 @@ private fun SettingsScreen(
     localMode: Boolean, onLocalMode: (Boolean) -> Unit,
     apiKey: String, onApiKey: (String) -> Unit,
     backendAuthenticated: Boolean, backendPassword: String, onBackendPassword: (String) -> Unit,
-    onLoginBackend: () -> Unit, onLogoutBackend: () -> Unit,
+    onLoginBackend: () -> Unit, onLogoutBackend: () -> Unit, onLogoutAllBackend: () -> Unit,
     server: String, onServer: (String) -> Unit,
     project: String, onProject: (String) -> Unit,
     model: String, models: List<ModelInfo>,
@@ -1083,6 +1091,9 @@ private fun SettingsScreen(
                 if (backendAuthenticated) {
                     OutlinedButton(onClick = onLogoutBackend, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
                         Text("Выйти из backend")
+                    }
+                    OutlinedButton(onClick = onLogoutAllBackend, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
+                        Text("Выйти на всех устройствах")
                     }
                 } else {
                     OutlinedTextField(
