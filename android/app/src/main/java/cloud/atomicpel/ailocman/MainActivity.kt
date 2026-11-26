@@ -172,8 +172,19 @@ private fun LocmanApp(
         if (busy) return
         scope.launch {
             busy = true
-            try { block() } catch (e: Exception) { status = e.message ?: "Неизвестная ошибка" }
-            finally { busy = false }
+            try {
+                block()
+            } catch (e: Exception) {
+                if (e is BackendApiException && e.statusCode == 401) {
+                    onClearBackendSession()
+                    backendAuthenticated = false
+                    status = "Сессия backend истекла или отозвана. Войди повторно в настройках."
+                } else {
+                    status = e.message ?: "Неизвестная ошибка"
+                }
+            } finally {
+                busy = false
+            }
         }
     }
 
@@ -201,7 +212,15 @@ private fun LocmanApp(
                     delay(2000)
                 }
             } catch (error: Exception) {
-                if (projectId == taskProjectId) status = error.message ?: "Не удалось обновить статус задачи"
+                if (error is BackendApiException && error.statusCode == 401) {
+                    onClearBackendSession()
+                    backendAuthenticated = false
+                }
+                if (projectId == taskProjectId) {
+                    status = if (error is BackendApiException && error.statusCode == 401)
+                        "Сессия backend истекла. Войди повторно в настройках."
+                    else error.message ?: "Не удалось обновить статус задачи"
+                }
             } finally {
                 monitoredTaskIds.remove(taskId)
             }
